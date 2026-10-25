@@ -21,12 +21,15 @@
 | 11 | SPECIAL_INPUT_SUCCESS | `_handle_passenger_count_input` | 1~9 | 인원수별 좌석 배치 선택 요청 | PASSENGER_COUNT_INPUT_SUCCESS |
 | 12 | PASSENGER_COUNT_INPUT_SUCCESS | `_handle_seat_strategy_input` | 1 또는 2 | 자동 결제 여부 질문 | CARD_CHOICE_PENDING |
 | 12-1 | CARD_CHOICE_PENDING | `_handle_auto_payment_choice` | "N" | 최종 확인 화면 | SEAT_STRATEGY_INPUT_SUCCESS |
-| 12-2 | CARD_CHOICE_PENDING | `_handle_auto_payment_choice` | "Y" | 카드번호 요청 | CARD_NUMBER_PENDING |
+| 12-2 | CARD_CHOICE_PENDING | `_handle_auto_payment_choice` | "Y" (저장된 카드 있음) | 저장된 카드로 결제, 최종 확인 화면 | SEAT_STRATEGY_INPUT_SUCCESS |
+| 12-2' | CARD_CHOICE_PENDING | `_handle_auto_payment_choice` | "Y" (저장된 카드 없음) 또는 "변경" | 카드번호 요청 | CARD_NUMBER_PENDING |
 | 12-3 | CARD_NUMBER_PENDING | `_handle_card_number_input` | 1234-5678-1234-5678 (메시지 자동 삭제) | 유효기간 요청 | CARD_EXPIRE_PENDING |
 | 12-4 | CARD_EXPIRE_PENDING | `_handle_card_expire_input` | 2812 또는 12/28 | 비밀번호 앞 2자리 요청 | CARD_PASSWORD_PENDING |
 | 12-5 | CARD_PASSWORD_PENDING | `_handle_card_password_input` | 12 (메시지 자동 삭제) | 소유자 확인번호 요청 | CARD_VERIFY_PENDING |
-| 12-6 | CARD_VERIFY_PENDING | `_handle_card_verify_input` | 900101 또는 사업자번호 10자리 (메시지 자동 삭제) | 카드 등록 완료 + 최종 확인 화면 | SEAT_STRATEGY_INPUT_SUCCESS |
-| 13 | SEAT_STRATEGY_INPUT_SUCCESS | `_handle_final_confirmation` | "Y" 또는 "예" | "예약 시작" (카드가 있으면 검색 프로세스에 전달 후 삭제) | FINDING_TICKET |
+| 12-6 | CARD_VERIFY_PENDING | `_handle_card_verify_input` | 900101 또는 사업자번호 10자리 (메시지 자동 삭제) | 카드 저장(암호화) + 최종 확인 화면 | SEAT_STRATEGY_INPUT_SUCCESS |
+| 13 | SEAT_STRATEGY_INPUT_SUCCESS | `_handle_final_confirmation` | "Y" 또는 "예" | "예약 시작" (저장된 카드를 검색 프로세스에 전달) | FINDING_TICKET |
+
+`/card_new` 명령은 예약과 무관하게 12-3 ~ 12-6 단계만 실행하고(`cardStandalone` 플래그), 완료 후 세션을 초기화합니다.
 
 `AUTO_PAYMENT_ENABLED=False`이면 12-x 단계를 건너뛰고 바로 최종 확인 화면으로 갑니다. 1인 탑승은 좌석 배치 선택 없이 11단계에서 바로 자동 결제 여부를 묻습니다.
 

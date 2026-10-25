@@ -155,20 +155,36 @@ class StorageInterface(ABC):
         """Remove the Kakao link of a chat ID."""
         pass
 
-    # Card Info (automatic payment) - short lived, conversation only
+    # Card Info (automatic payment) - entry buffer, short lived
     @abstractmethod
     def get_card_info(self, chat_id: int) -> Optional[CardInfo]:
-        """Get the card registered for automatic payment during the current conversation."""
+        """Get the card currently being entered (partial data allowed)."""
         pass
 
     @abstractmethod
     def save_card_info(self, chat_id: int, card: CardInfo) -> None:
-        """Save card info with a short TTL."""
+        """Save the card being entered with a short TTL."""
         pass
 
     @abstractmethod
     def delete_card_info(self, chat_id: int) -> None:
-        """Forget the card info."""
+        """Forget the card being entered."""
+        pass
+
+    # Saved Card (automatic payment) - persistent, encrypted at rest
+    @abstractmethod
+    def get_saved_card(self, chat_id: int) -> Optional[CardInfo]:
+        """Get the card saved for automatic payment of future reservations."""
+        pass
+
+    @abstractmethod
+    def save_saved_card(self, chat_id: int, card: CardInfo) -> None:
+        """Persist the card for automatic payment."""
+        pass
+
+    @abstractmethod
+    def delete_saved_card(self, chat_id: int) -> None:
+        """Remove the saved card."""
         pass
 
     # Debug Mode Management

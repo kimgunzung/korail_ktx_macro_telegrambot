@@ -10,6 +10,7 @@ from models import (
 )
 from storage.base import StorageInterface
 from config.settings import settings
+from utils.crypto import encrypt_json, decrypt_json, DecryptionError
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
@@ -435,27 +436,47 @@ class RedisStorage(StorageInterface):
         self.redis.delete(f"kakao_tokens:{chat_id}")
 
     # ==================== Card Info (automatic payment) ====================
+    # Both the entry buffer and the saved card are encrypted at rest (utils.crypto).
 
-    CARD_INFO_TTL_SECONDS = 60 * 60  # the conversation step takes minutes, not hours
+    CARD_INFO_TTL_SECONDS = 60 * 60  # the entry step takes minutes, not hours
 
-    def get_card_info(self, chat_id: int) -> Optional[CardInfo]:
-        """Get the card registered for automatic payment during the current conversation."""
-        data = self.redis.get(f"card_info:{chat_id}")
+    def _read_card(self, key: str) -> Optional[CardInfo]:
+        data = self.redis.get(key)
         if not data:
             return None
         try:
-            return CardInfo.from_dict(json.loads(data))
-        except (json.JSONDecodeError, KeyError, TypeError, ValueError) as e:
-            logger.error(f"Failed to deserialize card info: {e}")
+            return CardInfo.from_dict(decrypt_json(data))
+        except DecryptionError as e:
+            logger.error(f"Cannot decrypt {key} (CARD_ENCRYPTION_KEY changed?): {e}")
+            return None
+        except (KeyError, TypeError, ValueError) as e:
+            logger.error(f"Failed to deserialize {key}: {e}")
             return None
 
+    def get_card_info(self, chat_id: int) -> Optional[CardInfo]:
+        """Get the card currently being entered (partial data allowed)."""
+        return self._read_card(f"card_info:{chat_id}")
+
     def save_card_info(self, chat_id: int, card: CardInfo) -> None:
-        """Save card info with a short TTL (it is handed to the background process on start)."""
-        self.redis.setex(f"card_info:{chat_id}", self.CARD_INFO_TTL_SECONDS, json.dumps(card.to_dict()))
+        """Save the card being entered with a short TTL."""
+        self.redis.setex(f"card_info:{chat_id}", self.CARD_INFO_TTL_SECONDS, encrypt_json(card.to_dict()))
 
     def delete_card_info(self, chat_id: int) -> None:
-        """Forget the card info."""
+        """Forget the card being entered."""
         self.redis.delete(f"card_info:{chat_id}")
+
+    def get_saved_card(self, chat_id: int) -> Optional[CardInfo]:
+        """Get the card saved for automatic payment of future reservations."""
+        return self._read_card(f"saved_card:{chat_id}")
+
+    def save_saved_card(self, chat_id: int, card: CardInfo) -> None:
+        """Persist the card for automatic payment (no TTL; removed with /card_delete)."""
+        self.redis.set(f"saved_card:{chat_id}", encrypt_json(card.to_dict()))
+        logger.info(f"Saved payment card {card.masked} for chat_id={chat_id}")
+
+    def delete_saved_card(self, chat_id: int) -> None:
+        """Remove the saved card."""
+        self.redis.delete(f"saved_card:{chat_id}")
 
     # ==================== Serialization Helpers ====================
 

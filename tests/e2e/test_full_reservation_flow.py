@@ -247,8 +247,9 @@ class TestFullReservationFlow:
         assert call_args[1]['search_params'].seat_strategy == 'random'
         card = call_args[1]['card']
         assert card.number == "4111111111111111" and card.expire == "3512"
-        # the card is gone from Redis once the background process owns it
+        # the entry buffer is gone; the card stays saved (encrypted) for the next reservation
         assert self.storage.get_card_info(chat_id) is None
+        assert self.storage.get_saved_card(chat_id).number == "4111111111111111"
 
     @patch('services.korail_service.KorailService.login')
     def test_flow_with_cancellation_mid_way(self, mock_login):

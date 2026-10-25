@@ -66,6 +66,7 @@ jobs:
                 PUBLIC_BASE_URL=${{ vars.PUBLIC_BASE_URL }}
                 KAKAO_REST_API_KEY=${{ secrets.KAKAO_REST_API_KEY }}
                 KAKAO_CLIENT_SECRET=${{ secrets.KAKAO_CLIENT_SECRET }}
+                CARD_ENCRYPTION_KEY=${{ secrets.CARD_ENCRYPTION_KEY }}
                 REDIS_HOST=redis
                 REDIS_PORT=6379
                 REDIS_DB=0

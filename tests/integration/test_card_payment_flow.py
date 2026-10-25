@@ -15,6 +15,10 @@ from storage import RedisStorage
 FUTURE_EXPIRE = "3512"
 
 
+def _saved_card():
+    return CardInfo(number="4111111111111111", expire=FUTURE_EXPIRE, password="12", verify_number="900101", saved_at=1_700_000_000.0)
+
+
 def _session(storage, chat_id=1, state=UserProgress.CARD_CHOICE_PENDING, **extra):
     session = UserSession(chat_id=chat_id, in_progress=True, last_action=state,
                           credentials=UserCredentials(korail_id="010-1234-5678", korail_pw="pw"))
@@ -77,25 +81,31 @@ class TestCardConversation:
         assert self._state() == UserProgress.SEAT_STRATEGY_INPUT_SUCCESS
         assert [c.args[1] for c in self.telegram.delete_message.call_args_list] == [101, 102, 103, 104]
 
-        # Card stored (short TTL) and the summary shows only the mask
-        card = self.storage.get_card_info(1)
-        assert card == CardInfo(number="4111111111111111", expire=FUTURE_EXPIRE, password="12", verify_number="900101")
-        assert 0 < self.storage.redis.ttl("card_info:1") <= 3600
+        # Card saved persistently (entry buffer dropped) and the summary shows only the mask
+        assert self.storage.get_card_info(1) is None
+        card = self.storage.get_saved_card(1)
+        assert (card.number, card.expire, card.password, card.verify_number) == (
+            "4111111111111111", FUTURE_EXPIRE, "12", "900101")
+        assert card.saved_at > 0
+        assert self.storage.redis.ttl("saved_card:1") == -1  # no expiry
+        # encrypted at rest: the raw value never contains the digits
+        raw = self.storage.redis.get("saved_card:1")
+        assert "4111" not in raw and "900101" not in raw
         summary = self._sent()[-1]
         assert "카드 자동 결제 (****1111)" in summary and "4111111111111111" not in summary
 
-        # Final confirmation hands the card to the background process and forgets it
+        # Final confirmation hands the card to the background process and keeps it saved
         self.handler.handle_message(1, "Y")
         assert self._state() == UserProgress.FINDING_TICKET
         kwargs = self.reservation.start_reservation_process.call_args.kwargs
         assert kwargs['card'] == card
-        assert self.storage.get_card_info(1) is None
+        assert self.storage.get_saved_card(1) == card
 
     def test_corporate_card(self):
         _session(self.storage, state=UserProgress.CARD_VERIFY_PENDING, cardMask="****1111")
         self.storage.save_card_info(1, CardInfo(number="4111111111111111", expire=FUTURE_EXPIRE, password="12", verify_number=""))
         self.handler.handle_message(1, "123-45-67890", message_id=5)
-        assert self.storage.get_card_info(1).is_corporate is True
+        assert self.storage.get_saved_card(1).is_corporate is True
         assert "법인카드" in self._sent()[-2]
         assert "법인" in self._sent()[-1]
 
@@ -119,20 +129,78 @@ class TestCardConversation:
         assert self._state() == UserProgress.CARD_NUMBER_PENDING
         assert "다시 입력" in self._sent()[-1]
 
-    def test_final_no_forgets_card(self):
+    def test_final_no_keeps_saved_card(self):
         _session(self.storage, state=UserProgress.SEAT_STRATEGY_INPUT_SUCCESS, cardMask="****1111")
-        self.storage.save_card_info(1, CardInfo(number="4111111111111111", expire=FUTURE_EXPIRE, password="12", verify_number="900101"))
+        self.storage.save_card_info(1, CardInfo(number="4111111111111111", expire=FUTURE_EXPIRE, password="12", verify_number=""))
+        self.storage.save_saved_card(1, _saved_card())
         self.handler.handle_message(1, "N")
         assert self.storage.get_card_info(1) is None
+        assert self.storage.get_saved_card(1) is not None
         assert self.storage.get_user_session(1).in_progress is False
 
-    def test_incomplete_card_at_start_falls_back_to_manual(self):
+    def test_missing_saved_card_at_start_falls_back_to_manual(self):
         _session(self.storage, state=UserProgress.SEAT_STRATEGY_INPUT_SUCCESS, cardMask="****1111")
-        # TTL expired: nothing in Redis
+        # saved card deleted (e.g. /card_delete) between confirmation screen and Y
         self.handler.handle_message(1, "Y")
         kwargs = self.reservation.start_reservation_process.call_args.kwargs
         assert kwargs['card'] is None
         assert any("자동 결제 없이" in t for t in self._sent())
+
+    # ---- saved card path
+
+    def test_saved_card_is_offered_and_used(self):
+        self.storage.save_saved_card(1, _saved_card())
+        _session(self.storage, state=UserProgress.SPECIAL_INPUT_SUCCESS)
+        self.handler.handle_message(1, "1")  # single passenger -> auto payment question
+        assert self._state() == UserProgress.CARD_CHOICE_PENDING
+        assert "저장된 카드(****1111)" in self._sent()[-1]
+
+        self.handler.handle_message(1, "Y")
+        assert self._state() == UserProgress.SEAT_STRATEGY_INPUT_SUCCESS
+        assert "카드 자동 결제 (****1111)" in self._sent()[-1]
+        self.telegram.delete_message.assert_not_called()  # nothing sensitive was typed
+
+        self.handler.handle_message(1, "Y")
+        kwargs = self.reservation.start_reservation_process.call_args.kwargs
+        assert kwargs['card'] == _saved_card()
+        assert self.storage.get_saved_card(1) == _saved_card()
+
+    def test_saved_card_can_be_replaced_in_flow(self):
+        self.storage.save_saved_card(1, _saved_card())
+        _session(self.storage)
+        self.handler.handle_message(1, "변경")
+        assert self._state() == UserProgress.CARD_NUMBER_PENDING
+        self.handler.handle_message(1, "5500000000000004", message_id=1)
+        self.handler.handle_message(1, FUTURE_EXPIRE, message_id=2)
+        self.handler.handle_message(1, "34", message_id=3)
+        self.handler.handle_message(1, "850505", message_id=4)
+        saved = self.storage.get_saved_card(1)
+        assert saved.number == "5500000000000004" and saved.password == "34"
+        assert self._state() == UserProgress.SEAT_STRATEGY_INPUT_SUCCESS
+        assert "****0004" in self._sent()[-1]
+
+    def test_saved_card_declined_pays_manually(self):
+        self.storage.save_saved_card(1, _saved_card())
+        _session(self.storage)
+        self.handler.handle_message(1, "N")
+        assert self._state() == UserProgress.SEAT_STRATEGY_INPUT_SUCCESS
+        assert "직접 결제 (예약 후 안내)" in self._sent()[-1]
+        self.handler.handle_message(1, "Y")
+        assert self.reservation.start_reservation_process.call_args.kwargs['card'] is None
+
+    def test_standalone_registration(self):
+        session = UserSession(chat_id=1)
+        self.handler.start_card_registration(1, session)
+        assert self._state() == UserProgress.CARD_NUMBER_PENDING
+        self.handler.handle_message(1, "4111111111111111", message_id=1)
+        self.handler.handle_message(1, FUTURE_EXPIRE, message_id=2)
+        self.handler.handle_message(1, "12", message_id=3)
+        self.handler.handle_message(1, "900101", message_id=4)
+        session = self.storage.get_user_session(1)
+        assert session.in_progress is False and session.last_action == UserProgress.INIT
+        assert self.storage.get_saved_card(1).number == "4111111111111111"
+        assert "저장되었습니다" in self._sent()[-1]
+        self.reservation.start_reservation_process.assert_not_called()
 
     def test_feature_disabled_skips_question(self):
         session = _session(self.storage, state=UserProgress.SPECIAL_INPUT_SUCCESS)
@@ -180,14 +248,16 @@ class TestReservationServiceCardHandoff:
             self.service.start_reservation_process(1, "010-1234-5678", "pw", params)
         assert "KORAIL_BOT_CARD" not in mock_popen.call_args.kwargs['env']
 
-    def test_cancel_forgets_card(self):
-        self.storage.save_card_info(1, CardInfo(number="4111111111111111", expire=FUTURE_EXPIRE, password="12", verify_number="900101"))
+    def test_cancel_forgets_entry_buffer_but_keeps_saved_card(self):
+        self.storage.save_card_info(1, CardInfo(number="4111111111111111", expire=FUTURE_EXPIRE, password="12", verify_number=""))
+        self.storage.save_saved_card(1, _saved_card())
         from models import RunningReservation
         self.storage.save_running_reservation(RunningReservation(
             chat_id=1, process_id=999999999, korail_id="x",
             search_params=TrainSearchParams(dep_date="20991231", src_locate="서울", dst_locate="부산", dep_time="090000")))
         self.service.cancel_reservation(1)
         assert self.storage.get_card_info(1) is None
+        assert self.storage.get_saved_card(1) == _saved_card()
 
 
 class TestWebhookPaidCallbacks:
@@ -253,3 +323,64 @@ class TestWebhookPaidCallbacks:
         self.telegram.delete_message.return_value = True
         self.client.post('/telebot', json={"message": {"message_id": 55, "chat": {"id": 1}, "text": "4111111111111111"}})
         self.telegram.delete_message.assert_called_once_with(1, 55)
+
+
+class TestCardCommands:
+    def setup_method(self):
+        from handlers import CommandHandler
+        self.storage = RedisStorage()
+        self.telegram = Mock(spec=TelegramService)
+        self.telegram.delete_message.return_value = True
+        self.handler = CommandHandler(self.storage, self.telegram, Mock(spec=ReservationService),
+                                      Mock(spec=PaymentReminderService))
+
+    def teardown_method(self):
+        self.storage.redis.flushdb()
+
+    def _sent(self):
+        return [c.args[1] for c in self.telegram.send_message.call_args_list]
+
+    def test_card_none(self):
+        self.handler.route_command(1, "/card")
+        assert "저장된 카드가 없습니다" in self._sent()[0]
+
+    def test_card_shows_masked_info_only(self):
+        self.storage.save_saved_card(1, _saved_card())
+        self.handler.route_command(1, "/card")
+        text = self._sent()[0]
+        assert "****1111" in text and "12/35" in text and "4111111111111111" not in text and "900101" not in text
+
+    def test_card_delete(self):
+        self.storage.save_saved_card(1, _saved_card())
+        self.handler.route_command(1, "/card_delete")
+        assert self.storage.get_saved_card(1) is None
+        assert "삭제했습니다" in self._sent()[0]
+        self.handler.route_command(1, "/card_delete")
+        assert "저장된 카드가 없습니다" in self._sent()[1]
+
+    def test_card_new_starts_registration(self):
+        self.handler.route_command(1, "/card_new")
+        session = self.storage.get_user_session(1)
+        assert session.in_progress and session.last_action == UserProgress.CARD_NUMBER_PENDING
+        assert session.train_info.get('cardStandalone') is True
+        assert "카드번호" in self._sent()[0]
+
+    def test_card_new_refused_during_reservation_flow(self):
+        _session(self.storage, state=UserProgress.DATE_INPUT_SUCCESS)
+        self.handler.route_command(1, "/card_new")
+        assert self.storage.get_user_session(1).last_action == UserProgress.DATE_INPUT_SUCCESS
+        assert "/cancel" in self._sent()[0]
+
+    def test_card_new_disabled(self):
+        with patch('config.settings.settings.AUTO_PAYMENT_ENABLED', False):
+            self.handler.route_command(1, "/card_new")
+        assert "꺼져" in self._sent()[0]
+        assert self.storage.get_user_session(1) is None
+
+    def test_cancel_during_standalone_registration_keeps_old_card(self):
+        self.storage.save_saved_card(1, _saved_card())
+        self.handler.route_command(1, "/card_new")
+        self.handler.reservation.cancel_reservation.return_value = False
+        self.handler.route_command(1, "/cancel")
+        assert self.storage.get_saved_card(1) == _saved_card()
+        assert self.storage.get_user_session(1).in_progress is False

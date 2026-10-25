@@ -76,10 +76,20 @@ class CardInfo:
     password: str        # first two digits of the card password
     verify_number: str   # YYMMDD birth date (personal) or 10-digit business number (corporate)
     installment: int = 0
+    saved_at: float = 0.0  # unix time when the card was saved (0 while being entered)
 
     @property
     def is_corporate(self) -> bool:
         return len(self.verify_number) == 10
+
+    @property
+    def is_complete(self) -> bool:
+        return bool(self.number and self.expire and self.password and self.verify_number)
+
+    @property
+    def expire_display(self) -> str:
+        """``YYMM`` -> ``MM/YY``."""
+        return f"{self.expire[2:]}/{self.expire[:2]}" if len(self.expire) == 4 else self.expire
 
     @property
     def masked(self) -> str:
@@ -93,6 +103,7 @@ class CardInfo:
             "password": self.password,
             "verify_number": self.verify_number,
             "installment": self.installment,
+            "saved_at": self.saved_at,
         }
 
     @classmethod
@@ -103,6 +114,7 @@ class CardInfo:
             password=str(data["password"]),
             verify_number=str(data["verify_number"]),
             installment=int(data.get("installment", 0)),
+            saved_at=float(data.get("saved_at", 0) or 0),
         )
 
     def __repr__(self) -> str:

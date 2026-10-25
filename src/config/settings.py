@@ -32,6 +32,9 @@ class Settings:
 
     # Automatic card payment right after a reservation succeeds (users opt in per reservation).
     AUTO_PAYMENT_ENABLED: bool = os.environ.get('AUTO_PAYMENT_ENABLED', 'True').lower() in ('true', '1', 'yes')
+    # Secret used to encrypt saved card details in Redis (AES-256-GCM). Strongly recommended;
+    # without it a key is derived from BOTTOKEN, so anyone holding the bot token can decrypt.
+    CARD_ENCRYPTION_KEY: Optional[str] = os.environ.get('CARD_ENCRYPTION_KEY') or None
 
     # Payment Reminder Configuration
     PAYMENT_TIMEOUT_MINUTES: int = int(os.environ.get('PAYMENT_TIMEOUT_MINUTES', '10'))

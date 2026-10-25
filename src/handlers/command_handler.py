@@ -274,6 +274,47 @@ class CommandHandler:
                 f"❌ Redis 초기화 실패: {str(e)}"
             )
 
+    # ==================== Saved payment card ====================
+
+    def handle_card(self, chat_id: int) -> None:
+        """Handle /card: show the saved card (masked)."""
+        from datetime import datetime
+        logger.info(f"Handling /card for chat_id={chat_id}")
+        card = self.storage.get_saved_card(chat_id)
+        if not card or not card.is_complete:
+            self.telegram.send_message(chat_id, Messages.CARD_NONE)
+            return
+        saved_at = datetime.fromtimestamp(card.saved_at).strftime("%Y-%m-%d %H:%M") if card.saved_at else "-"
+        self.telegram.send_message(chat_id, Messages.CARD_STATUS.format(
+            masked=card.masked,
+            corporate=" (법인)" if card.is_corporate else "",
+            expire=card.expire_display,
+            saved_at=saved_at,
+        ))
+
+    def handle_card_delete(self, chat_id: int) -> None:
+        """Handle /card_delete: forget the saved card."""
+        logger.info(f"Handling /card_delete for chat_id={chat_id}")
+        had_card = self.storage.get_saved_card(chat_id) is not None
+        self.storage.delete_saved_card(chat_id)
+        self.storage.delete_card_info(chat_id)
+        self.telegram.send_message(chat_id, Messages.CARD_DELETED if had_card else Messages.CARD_NONE)
+
+    def handle_card_new(self, chat_id: int) -> None:
+        """Handle /card_new: register (or replace) the saved card outside a reservation."""
+        logger.info(f"Handling /card_new for chat_id={chat_id}")
+        if not settings.AUTO_PAYMENT_ENABLED:
+            self.telegram.send_message(chat_id, Messages.AUTO_PAYMENT_DISABLED)
+            return
+        session = self.storage.get_user_session(chat_id)
+        if session and session.in_progress:
+            self.telegram.send_message(chat_id, Messages.CARD_REGISTER_BUSY)
+            return
+        if not session:
+            session = UserSession(chat_id=chat_id)
+        from handlers.conversation_handler import ConversationHandler
+        ConversationHandler(self.storage, self.telegram, self.reservation).start_card_registration(chat_id, session)
+
     # ==================== KakaoTalk ====================
 
     def handle_kakao(self, chat_id: int) -> None:
@@ -369,6 +410,7 @@ class CommandHandler:
             f"/start - 예약 시작\n"
             f"/cancel - 예약 취소\n"
             f"/status - 상태 확인\n"
+            f"/card - 자동 결제 카드 확인\n"
             f"/kakao - 카카오톡 연동\n"
             f"/help - 도움말\n\n"
             f"🔧 관리자 명령어는 별도로 문의하세요."
@@ -414,6 +456,12 @@ class CommandHandler:
             self.handle_status(chat_id)
         elif command == "/help":
             self.handle_help(chat_id)
+        elif command == "/card":
+            self.handle_card(chat_id)
+        elif command == "/card_new":
+            self.handle_card_new(chat_id)
+        elif command == "/card_delete":
+            self.handle_card_delete(chat_id)
         elif command == "/kakao":
             self.handle_kakao(chat_id)
         elif command == "/kakao_code":

@@ -8,23 +8,27 @@ This test suite provides comprehensive coverage for the Korail KTX Telegram Bot 
 - **Integration Tests**: Test service interactions and workflows
 - **E2E Tests**: Test complete user journeys
 
-**Total Tests: 119+**
+**Total Tests: 230+**
 
 ## Test Structure
 
 ```
 tests/
-├── unit/                    # Unit tests
-│   └── test_validators.py  # Input validation tests (47 tests)
-├── integration/            # Integration tests
-│   ├── test_refactored_app.py       # Basic architecture tests (9 tests)
-│   ├── test_conversation_handler.py # Conversation flow tests (18 tests)
-│   ├── test_reservation_service.py  # Reservation management tests (8 tests)
-│   ├── test_payment_reminder.py     # Payment reminder tests (11 tests)
-│   └── test_webhook.py              # Webhook handling tests (15 tests)
+├── unit/                    # Unit tests (no Redis needed)
+│   ├── test_validators.py            # Input validation tests
+│   ├── test_korail_service.py        # pykorail error mapping
+│   ├── test_kakao_service.py         # KakaoTalk OAuth / memo delivery
+│   └── test_notification_service.py  # Telegram + Kakao composite notifier
+├── integration/            # Integration tests (Redis)
+│   ├── test_refactored_app.py        # Basic architecture tests
+│   ├── test_conversation_handler.py  # Conversation flow tests
+│   ├── test_reservation_service.py   # Reservation process management
+│   ├── test_payment_reminder.py      # Payment reminder tests
+│   ├── test_webhook.py               # Webhook handling tests
+│   └── test_kakao_integration.py     # /kakao commands and OAuth callback
 ├── e2e/                    # End-to-end tests
-│   └── test_full_reservation_flow.py # Complete flows (7 tests)
-└── conftest.py            # Shared fixtures (Redis container)
+│   └── test_full_reservation_flow.py # Complete flows
+└── conftest.py            # Shared fixtures (Redis container or local Redis)
 ```
 
 ## Running Tests
@@ -43,6 +47,20 @@ pipenv install --dev
 # - freezegun (time manipulation)
 # - testcontainers (Redis container for testing)
 ```
+
+### Redis
+
+`conftest.py` starts a throwaway Redis container through `testcontainers` when Docker
+is available. Without Docker it falls back to a local server at `REDIS_HOST:REDIS_PORT`
+(default `localhost:6379`), e.g.:
+
+```bash
+redis-server --port 6379 --daemonize yes
+pipenv run pytest tests/ -v
+```
+
+The integration/e2e tests call `FLUSHDB` on that database after every test, so point
+them at a dedicated instance or database (`REDIS_DB`).
 
 ### Run All Tests
 

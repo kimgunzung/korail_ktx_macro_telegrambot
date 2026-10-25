@@ -412,3 +412,73 @@ class TestConversationHandler:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+class TestLoginRetryAndTimeWindow:
+    """Regression tests for the audit fixes in the conversation flow."""
+
+    def setup_method(self):
+        self.storage = RedisStorage()
+        self.telegram = Mock(spec=TelegramService)
+        self.reservation = Mock(spec=ReservationService)
+        self.handler = ConversationHandler(self.storage, self.telegram, self.reservation)
+
+    def teardown_method(self):
+        self.storage.redis.flushdb()
+
+    def _session(self, state, **train_info):
+        session = UserSession(chat_id=1, in_progress=True, last_action=state,
+                              credentials=UserCredentials(korail_id="010-1234-5678", korail_pw=""))
+        session.train_info = dict(train_info)
+        self.storage.save_user_session(session)
+        return session
+
+    @patch('services.korail_service.KorailService.login', return_value=False)
+    def test_failed_login_then_yes_reenters_account(self, _login):
+        self._session(UserProgress.ID_INPUT_SUCCESS)
+        self.handler.handle_message(1, "wrongpass")
+        assert self.storage.get_user_session(1).last_action == UserProgress.ID_INPUT_SUCCESS
+        assert "로그인 실패" in self.telegram.send_message.call_args.args[1]
+
+        self.handler.handle_message(1, "Y")
+        session = self.storage.get_user_session(1)
+        assert session.last_action == UserProgress.START_ACCEPTED
+        assert "휴대전화번호" in self.telegram.send_message.call_args.args[1]
+
+    @patch('services.korail_service.KorailService.login', return_value=False)
+    def test_failed_login_then_no_cancels(self, _login):
+        self._session(UserProgress.ID_INPUT_SUCCESS)
+        self.handler.handle_message(1, "wrongpass")
+        self.handler.handle_message(1, "N")
+        session = self.storage.get_user_session(1)
+        assert session.in_progress is False
+        assert session.last_action == UserProgress.INIT
+
+    @patch('services.korail_service.KorailService.login', side_effect=[False, True])
+    def test_failed_login_then_password_retries(self, _login):
+        self._session(UserProgress.ID_INPUT_SUCCESS)
+        self.handler.handle_message(1, "wrongpass")
+        self.handler.handle_message(1, "rightpass")
+        session = self.storage.get_user_session(1)
+        assert session.last_action == UserProgress.PW_INPUT_SUCCESS
+        assert session.credentials.korail_pw == "rightpass"
+        assert 'loginFailed' not in session.train_info
+
+    def test_yes_before_any_failure_is_just_a_bad_password(self):
+        self._session(UserProgress.ID_INPUT_SUCCESS)
+        self.handler.handle_message(1, "Y")
+        assert self.storage.get_user_session(1).last_action == UserProgress.ID_INPUT_SUCCESS
+        assert "짧" in self.telegram.send_message.call_args.args[1]
+
+    def test_max_dep_time_before_dep_time_rejected(self):
+        self._session(UserProgress.DEP_TIME_INPUT_SUCCESS, depTime="180000")
+        self.handler.handle_message(1, "0900")
+        session = self.storage.get_user_session(1)
+        assert session.last_action == UserProgress.DEP_TIME_INPUT_SUCCESS
+        assert 'maxDepTime' not in session.train_info
+        assert "빠릅니다" in self.telegram.send_message.call_args.args[1]
+
+    def test_max_dep_time_2400_always_ok(self):
+        self._session(UserProgress.DEP_TIME_INPUT_SUCCESS, depTime="180000")
+        self.handler.handle_message(1, "2400")
+        assert self.storage.get_user_session(1).train_info['maxDepTime'] == "2400"

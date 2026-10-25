@@ -18,7 +18,10 @@ sys.path.insert(0, src_dir)
 
 from config.settings import settings
 from storage.redis import RedisStorage
-from services import KorailService, TelegramService, PaymentReminderService, MultiReservationReminderService
+from services import (
+    KorailService, TelegramService, PaymentReminderService, MultiReservationReminderService,
+    KakaoService, NotificationService,
+)
 from services.korail_service import (
     DuplicateReservationError, KorailAccessRestrictedError, TrainType, ReserveOption
 )
@@ -41,7 +44,12 @@ class BackgroundReservationProcess:
             sys.exit(1)
 
         self.username = sys.argv[1]
-        self.password = sys.argv[2]
+        # The web app hands the password over through the environment so it does not
+        # appear in `ps`; the argv slot ("-") is kept for backward compatibility.
+        self.password = os.environ.get("KORAIL_BOT_PASSWORD") or sys.argv[2]
+        if self.password == "-":
+            logger.error("No Korail password provided (KORAIL_BOT_PASSWORD not set)")
+            sys.exit(1)
         self.dep_date = sys.argv[3]
         self.src_locate = sys.argv[4]
         self.dst_locate = sys.argv[5]
@@ -61,7 +69,11 @@ class BackgroundReservationProcess:
 
         # Initialize services
         self.storage = RedisStorage()
-        self.telegram = TelegramService(settings.TELEGRAM_BOT_TOKEN)
+        self.telegram = NotificationService(
+            TelegramService(settings.TELEGRAM_BOT_TOKEN),
+            KakaoService(self.storage),
+            self.storage,
+        )
         self.payment_reminder = PaymentReminderService(self.storage, self.telegram)
         self.multi_reminder = MultiReservationReminderService(self.storage, self.telegram)
         self.korail = KorailService()
@@ -362,7 +374,7 @@ class BackgroundReservationProcess:
 
 [문제가 없는데 계속 반복되는 경우, 이미 해당 열차가 예매가 되었을 수 있습니다. 사이트를 확인해주세요.]
 """
-                self._send_callback(message, status=0)
+                self._send_callback(message, status=1)
 
         except Exception as e:
             logger.error(f"Error in reservation process: {e}", exc_info=True)
@@ -555,6 +567,12 @@ class BackgroundReservationProcess:
         total_seats = self.passenger_count
         logger.info(f"=== RANDOM SEATING MODE: {total_seats} seats ===")
 
+        # Seats of a previous run must not leak into this run's final summary
+        self.storage.delete_partial_reservations(self.chat_id)
+        self.storage.set_current_seat_index(self.chat_id, None)
+
+        payment_timeout_seconds = settings.PAYMENT_TIMEOUT_MINUTES * 60
+
         for seat_index in range(total_seats):
             logger.info(f"━━━ Seat {seat_index + 1}/{total_seats} ━━━")
 
@@ -612,7 +630,7 @@ class BackgroundReservationProcess:
                 payment_confirmed = self.storage.wait_for_payment(
                     self.chat_id,
                     seat_index,
-                    timeout=600  # 10 minutes
+                    timeout=payment_timeout_seconds
                 )
 
                 if payment_confirmed:
@@ -622,7 +640,7 @@ class BackgroundReservationProcess:
                     timeout_msg = f"""
 ⏱ {seat_index + 1}번째 좌석 결제 시간 초과
 
-10분이 지났습니다. 다음 좌석 예약을 진행합니다.
+{settings.PAYMENT_TIMEOUT_MINUTES}분이 지났습니다. 다음 좌석 예약을 진행합니다.
 
 ⚠️ 미결제 좌석은 자동 취소될 수 있으니 빠르게 결제해주세요!
 """
@@ -720,7 +738,7 @@ class BackgroundReservationProcess:
 
                     if not duplicate_notified:
                         # Send notification only once
-                        self.telegram.send_message(
+                        self.telegram.send_notification(
                             self.chat_id,
                             f"⚠️ {seat_index + 1}번째 좌석 예약 시도 중 기존 예약 감지\n\n"
                             f"이미 해당 시간에 예약된 좌석이 있습니다.\n"
@@ -764,7 +782,7 @@ class BackgroundReservationProcess:
 
 💡 결제 후 아무 메시지나 보내면 다음 좌석 예약이 시작됩니다.
 
-⚠️ 10분 동안 메시지가 없으면 자동으로 다음 좌석 예약을 진행합니다.
+⚠️ {settings.PAYMENT_TIMEOUT_MINUTES}분 동안 메시지가 없으면 자동으로 다음 좌석 예약을 진행합니다.
 """
 
     def _build_final_random_message(self, all_reservations: list, total_seats: int) -> str:

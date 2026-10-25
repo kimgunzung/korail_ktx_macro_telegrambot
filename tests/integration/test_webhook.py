@@ -246,8 +246,8 @@ class TestTelegramWebhook:
 
         assert response.status_code == 200
 
-        # Check message sent
-        self.telegram.send_message.assert_called()
+        # Check message sent (as a notification, mirrored to KakaoTalk when linked)
+        self.telegram.send_notification.assert_called_once_with(chat_id, '예약 성공!')
 
         # Check payment reminders started
         self.payment_reminder.start_reminders.assert_called_once_with(chat_id)
@@ -272,7 +272,31 @@ class TestTelegramWebhook:
         assert response.status_code == 200
 
         # Check message sent
-        self.telegram.send_message.assert_called_once()
+        self.telegram.send_notification.assert_called_once_with(chat_id, '예약 실패')
+
+    def test_webhook_get_callback_failure_cleans_up(self):
+        """A failure callback must release the running reservation and reset the session."""
+        chat_id = 12345
+        from models import TrainSearchParams, RunningReservation
+        session = UserSession(chat_id=chat_id, in_progress=True, last_action=UserProgress.FINDING_TICKET)
+        self.storage.save_user_session(session)
+        self.storage.save_running_reservation(RunningReservation(
+            chat_id=chat_id, process_id=999999999, korail_id="010-1234-5678",
+            search_params=TrainSearchParams(dep_date="20991231", src_locate="서울", dst_locate="부산", dep_time="090000")
+        ))
+        self.reservation.finish_reservation = Mock()
+
+        response = self.client.get('/telebot', query_string={'chatId': str(chat_id), 'msg': '로그인 실패', 'status': '1'})
+
+        assert response.status_code == 200
+        self.reservation.finish_reservation.assert_called_once_with(chat_id, success=False)
+        self.payment_reminder.start_reminders.assert_not_called()
+
+    def test_webhook_post_ignores_message_without_text(self):
+        """Photos/stickers carry no text and must be ignored quietly."""
+        response = self.client.post('/telebot', json={"message": {"chat": {"id": 1}, "photo": []}})
+        assert response.status_code == 200
+        self.telegram.send_message.assert_not_called()
 
     def test_webhook_get_callback_partial_random(self):
         """Test GET callback for partial random seating."""
@@ -293,7 +317,7 @@ class TestTelegramWebhook:
         assert response.status_code == 200
 
         # Check message sent
-        self.telegram.send_message.assert_called_once()
+        self.telegram.send_notification.assert_called_once()
 
         # Payment reminders should NOT start yet (partial)
         self.payment_reminder.start_reminders.assert_not_called()
@@ -338,7 +362,7 @@ class TestTelegramWebhook:
         chat_id = 12345
 
         # Set current seat index (random seating in progress)
-        self.storage.save_current_seat_index(chat_id, 0)
+        self.storage.set_current_seat_index(chat_id, 0)
 
         payload = {
             "message": {
@@ -351,8 +375,9 @@ class TestTelegramWebhook:
 
         assert response.status_code == 200
 
-        # Check payment marked ready
-        # Note: This depends on implementation details
+        # Payment flag raised for the background process, seat index cleared
+        assert self.storage.is_payment_ready(chat_id, 0)
+        assert self.storage.get_current_seat_index(chat_id) is None
 
     def test_webhook_post_error_handling(self):
         """Test webhook handles errors gracefully."""

@@ -82,9 +82,10 @@ class TestLogin:
 class TestSearchTrains:
     def test_filters_by_max_dep_time_using_train_field(self, service):
         svc, fake = service
-        fake.trains.search.return_value = [_train("094400"), _train("125000"), _train("130000")]
+        fake.trains.search.return_value = [_train("094400"), _train("125000"), _train("130000"), _train("130100")]
         trains = svc.search_trains("20261001", "서울", "부산", "090000", "1300", TrainType.KTX, 1, verbose=False)
-        assert [t.dep_time for t in trains] == ["094400", "125000"]
+        # "1300까지": a 13:00 departure is still inside the window, 13:01 is not
+        assert [t.dep_time for t in trains] == ["094400", "125000", "130000"]
         kwargs = fake.trains.search.call_args.kwargs
         assert kwargs["depart_after"] == datetime(2026, 10, 1, 9, 0, 0)
         assert kwargs["train_type"] == TrainType.KTX

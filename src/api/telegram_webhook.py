@@ -4,7 +4,9 @@ from flask import request, make_response
 from flask_restful import Resource
 
 from storage.base import StorageInterface
-from services import TelegramService, ReservationService, PaymentReminderService, MultiReservationReminderService
+from services import (
+    TelegramService, ReservationService, PaymentReminderService, MultiReservationReminderService, KakaoService
+)
 from handlers import CommandHandler, ConversationHandler
 from models import PaymentStatus
 from utils.logger import get_logger
@@ -26,6 +28,7 @@ class TelegramWebhook(Resource):
         reservation_service: ReservationService,
         payment_reminder_service: PaymentReminderService,
         multi_reminder_service: Optional[MultiReservationReminderService] = None,
+        kakao_service: Optional[KakaoService] = None,
         **kwargs
     ):
         """
@@ -48,9 +51,11 @@ class TelegramWebhook(Resource):
         # would start one reminder thread per callback.
         self.multi_reminder = multi_reminder_service or MultiReservationReminderService(storage, telegram_service)
 
+        self.kakao = kakao_service or KakaoService(storage)
+
         # Initialize handlers
         self.command_handler = CommandHandler(
-            storage, telegram_service, reservation_service, payment_reminder_service
+            storage, telegram_service, reservation_service, payment_reminder_service, self.kakao
         )
         self.conversation_handler = ConversationHandler(
             storage, telegram_service, reservation_service
@@ -72,11 +77,17 @@ class TelegramWebhook(Resource):
             # Extract message
             try:
                 message = data['message']
-                text = message['text'].strip()
                 chat_id = int(message['chat']['id'])
-            except (KeyError, ValueError) as e:
+            except (KeyError, TypeError, ValueError) as e:
                 logger.error(f"Invalid message format: {e}")
                 return make_response("OK")
+
+            text = message.get('text')
+            if text is None:
+                # Photos, stickers, contacts... carry no text; nothing to route.
+                logger.debug(f"Ignoring non-text message from chat_id={chat_id}")
+                return make_response("OK")
+            text = text.strip()
 
             logger.info(f"Received message from chat_id={chat_id}: {text}")
 
@@ -211,13 +222,19 @@ class TelegramWebhook(Resource):
                 f"is_multi={is_multi}, total_seats={total_seats}, seat_strategy={seat_strategy}"
             )
 
-            # Send message to user
-            self.telegram.send_message(chat_id, msg)
+            # Send message to user (mirrored to KakaoTalk when linked)
+            send = getattr(self.telegram, "send_notification", self.telegram.send_message)
+            send(chat_id, msg)
 
             # Handle different status codes
             # status=0: Complete success (all reservations done)
-            # status=1: Error/failure
+            # status=1: Error/failure - the background process has exited
             # status=2: Partial success (random seating intermediate notification)
+
+            if str(status) == "1":
+                logger.info(f"Reservation failed for chat_id={chat_id}, cleaning up")
+                self.reservation.finish_reservation(chat_id, success=False)
+                return make_response("OK")
 
             if str(status) == "2":
                 # Partial reservation notification (random seating)
@@ -259,17 +276,8 @@ class TelegramWebhook(Resource):
                     logger.info(f"Starting single payment reminders for chat_id={chat_id}")
                     self.payment_reminder.start_reminders(chat_id)
 
-                # Clean up running reservation
-                self.storage.delete_running_reservation(chat_id)
-
-                # Notify subscribers
-                subscribers = self.storage.get_all_subscribers()
-                if session and session.credentials:
-                    user_id = session.credentials.korail_id
-                    self.telegram.send_to_multiple(
-                        subscribers,
-                        f"{user_id}의 예약이 종료되었습니다."
-                    )
+                # Clean up running reservation and notify subscribers
+                self.reservation.finish_reservation(chat_id, success=True)
 
             return make_response("OK")
 

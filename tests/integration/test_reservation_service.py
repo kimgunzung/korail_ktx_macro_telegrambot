@@ -80,6 +80,7 @@ class TestReservationService:
         existing = RunningReservation(
             chat_id=chat_id,
             process_id=11111,
+            korail_id="010-1234-5678",
             search_params=TrainSearchParams(
                 dep_date="20991231",
                 src_locate="서울",
@@ -110,18 +111,21 @@ class TestReservationService:
             seat_strategy="consecutive"
         )
 
-        success = self.service.start_reservation_process(
-            chat_id=chat_id,
-            username="010-1234-5678",
-            password="password123",
-            search_params=search_params
-        )
+        with patch.object(self.service, '_process_alive', return_value=True):
+            success = self.service.start_reservation_process(
+                chat_id=chat_id,
+                username="010-1234-5678",
+                password="password123",
+                search_params=search_params
+            )
 
         # Should fail because one is already running
         assert success is False
         self.telegram.send_message.assert_called_once()
         call_args = self.telegram.send_message.call_args
         assert "이미" in call_args[0][1] or "already" in call_args[0][1].lower()
+        # The existing reservation is untouched
+        assert self.storage.get_running_reservation(chat_id).process_id == 11111
 
     @patch('subprocess.Popen')
     def test_cancel_reservation_success(self, mock_popen):
@@ -171,12 +175,11 @@ class TestReservationService:
         """Test cancelling when no reservation is running."""
         chat_id = 99999
 
-        self.service.cancel_reservation(chat_id)
+        cancelled = self.service.cancel_reservation(chat_id)
 
-        # Should send message that nothing was running
-        self.telegram.send_message.assert_called_once()
-        call_args = self.telegram.send_message.call_args
-        assert "없" in call_args[0][1] or "no" in call_args[0][1].lower()
+        # Nothing to cancel: report False and leave the user feedback to the command handler
+        assert cancelled is False
+        self.telegram.send_message.assert_not_called()
 
     def test_get_status_no_reservation(self):
         """Test getting status when no reservation is running."""
@@ -193,6 +196,7 @@ class TestReservationService:
         reservation = RunningReservation(
             chat_id=chat_id,
             process_id=12345,
+            korail_id="010-1234-5678",
             search_params=TrainSearchParams(
                 dep_date="20991231",
                 src_locate="서울",
@@ -262,6 +266,7 @@ class TestReservationService:
         reservation = RunningReservation(
             chat_id=chat_id,
             process_id=999999999,  # Invalid PID
+            korail_id="010-1234-5678",
             search_params=TrainSearchParams(
                 dep_date="20991231",
                 src_locate="서울",

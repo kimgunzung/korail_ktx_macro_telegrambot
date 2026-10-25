@@ -135,8 +135,13 @@ class TestRefactoredArchitecture:
         assert valid is False
 
         # Date validation
-        valid, error = InputValidator.validate_date("20991231")
+        from datetime import datetime, timedelta
+        next_week = (datetime.now() + timedelta(days=7)).strftime("%Y%m%d")
+        valid, error = InputValidator.validate_date(next_week)
         assert valid is True
+
+        valid, error = InputValidator.validate_date("20991231")
+        assert valid is False  # more than a year ahead
 
         valid, error = InputValidator.validate_date("20200101")
         assert valid is False  # Past date

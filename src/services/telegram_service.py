@@ -7,9 +7,34 @@ from utils.logger import get_logger
 
 logger = get_logger(__name__)
 
+# Telegram rejects messages longer than this (sendMessage "text" limit).
+TELEGRAM_MAX_MESSAGE_LENGTH = 4096
+
+
+def split_message(text: str, limit: int = TELEGRAM_MAX_MESSAGE_LENGTH) -> list[str]:
+    """Split ``text`` into chunks no longer than ``limit``, preferring line breaks."""
+    if text is None:
+        return []
+    if len(text) <= limit:
+        return [text]
+
+    chunks = []
+    remaining = text
+    while len(remaining) > limit:
+        cut = remaining.rfind("\n", 0, limit)
+        if cut <= 0:
+            cut = limit
+        chunks.append(remaining[:cut])
+        remaining = remaining[cut:].lstrip("\n")
+    if remaining:
+        chunks.append(remaining)
+    return chunks
+
 
 class TelegramService:
     """Service for sending messages via Telegram Bot API."""
+
+    REQUEST_TIMEOUT_SECONDS = 10
 
     def __init__(self, bot_token: Optional[str] = None):
         """
@@ -26,6 +51,8 @@ class TelegramService:
         """
         Send a text message to a Telegram chat.
 
+        Long messages are split into several Telegram messages.
+
         Args:
             chat_id: Telegram chat ID
             text: Message text to send
@@ -33,19 +60,29 @@ class TelegramService:
         Returns:
             True if message was sent successfully, False otherwise
         """
+        url = f"{self.base_url}/sendMessage"
         try:
-            url = f"{self.base_url}/sendMessage"
-            params = {
-                "chat_id": chat_id,
-                "text": text
-            }
-            response = self.session.get(url, params=params)
-            response.raise_for_status()
+            for chunk in split_message(text):
+                response = self.session.post(
+                    url,
+                    json={"chat_id": chat_id, "text": chunk},
+                    timeout=self.REQUEST_TIMEOUT_SECONDS,
+                )
+                response.raise_for_status()
             logger.info(f"Message sent to chat_id={chat_id}")
             return True
         except Exception as e:
             logger.error(f"Failed to send message to chat_id={chat_id}: {e}")
             return False
+
+    def send_notification(self, chat_id: int, text: str) -> bool:
+        """
+        Send an important notification (reservation result, payment deadline...).
+
+        For the plain Telegram service this is the same as ``send_message``; the
+        composite ``NotificationService`` additionally mirrors it to KakaoTalk.
+        """
+        return self.send_message(chat_id, text)
 
     def send_to_multiple(self, chat_ids: list[int], text: str) -> int:
         """

@@ -1,6 +1,7 @@
 # 코레일 KTX 예매 텔레그램 챗봇
 
 매진된 KTX 열차를 자동으로 모니터링하여 좌석이 나오면 예약해주는 텔레그램 봇입니다.
+카카오 계정을 연동하면 예약 결과와 결제 마감 알림을 카카오톡 "나와의 채팅"으로도 받을 수 있습니다.
 
 ## 빠른 시작
 
@@ -82,8 +83,7 @@ python src/app.py
 - `make run` - 애플리케이션 실행
 - `make shell` - pipenv shell 진입
 - `make test` - 전체 테스트 실행
-- `make test-api` - API 엔드포인트 테스트만 실행
-- `make test-logic` - Korail 로직 테스트만 실행
+- `make test-unit` / `make test-integration` / `make test-e2e` - 단계별 테스트 실행
 - `make requirements` - requirements.txt 생성
 
 ### Docker 배포
@@ -119,35 +119,54 @@ docker run -dit \
 | `BOTTOKEN` | ✅ | 텔레그램 봇 토큰 |
 | `ALLOW_LIST` | ❌ | 허용할 사용자 전화번호 목록 (쉼표로 구분) |
 | `USERID` | ❌ | 관리자 편의 로그인용 코레일 ID |
-| `USERPW` | ❌ | 관리자 편의 로그인용 코레일 비밀번호 |
+| `USERPW` | ❌ | 관리자 편의 로그인용 코레일 비밀번호 (관리자 명령어 비밀번호로도 사용) |
+| `FLASK_DEBUG` | ❌ | 기본 `False`. `True`면 Werkzeug 디버거가 외부에 노출되므로 운영 환경에서는 켜지 마세요 |
+| `PUBLIC_BASE_URL` | ❌ | 이 서버의 공개 URL (예: `https://bot.example.com`). 카카오 OAuth 리다이렉트에 사용 |
+| `KAKAO_REST_API_KEY` | ❌ | 카카오 개발자 앱의 REST API 키. 설정하면 카카오톡 연동이 활성화됨 |
+| `KAKAO_CLIENT_SECRET` | ❌ | 카카오 앱에서 Client Secret을 켠 경우 |
+| `KAKAO_REDIRECT_URI` | ❌ | 기본값 `{PUBLIC_BASE_URL}/kakao/oauth` |
+
+## 카카오톡 연동
+
+텔레그램 대화는 그대로 두고, **중요 알림(예약 성공/실패, 결제 마감, 오류)** 을 카카오톡 "나와의 채팅"으로도 복사해 보내줍니다.
+카카오 "나에게 보내기" API(`talk_message` 권한)를 사용하므로 카카오톡 채널/알림톡 비용 없이 동작합니다.
+
+### 서버 설정 (1회)
+
+1. [Kakao Developers](https://developers.kakao.com)에서 애플리케이션을 만들고 **REST API 키**를 확인합니다.
+2. **카카오 로그인**을 활성화하고 Redirect URI에 `https://<서버주소>/kakao/oauth` 를 등록합니다.
+3. **동의항목**에서 `카카오톡 메시지 전송 (talk_message)` 을 활성화합니다.
+4. 환경변수 `KAKAO_REST_API_KEY`, `PUBLIC_BASE_URL`(또는 `KAKAO_REDIRECT_URI`)을 설정하고 봇을 재시작합니다.
+   서버가 공개 URL을 갖지 않는 경우에도 Kakao Developers에 등록한 아무 URI(예: `https://localhost:8080/kakao/oauth`)를 `KAKAO_REDIRECT_URI`로 지정하면 아래 수동 방식으로 연동할 수 있습니다.
+
+### 사용자 연동
+
+| 명령어 | 설명 |
+|--------|------|
+| `/kakao` | 카카오 로그인 링크를 받아 연동 시작 (이미 연동된 경우 상태 표시) |
+| `/kakao_code <코드>` | 리다이렉트 페이지가 열리지 않을 때, 주소창의 `code=` 값을 복사해 수동 연동 |
+| `/kakao_test` | 카카오톡으로 테스트 메시지 전송 |
+| `/kakao_off` | 연동 해제 (저장된 토큰 삭제) |
+
+- 토큰은 Redis(`kakao_tokens:<chat_id>`)에 저장되며 access token 은 자동 갱신됩니다. refresh token 이 만료되면(약 2개월) 연동이 해제되고 텔레그램으로 안내합니다.
+- 카카오 텍스트 템플릿은 200자 제한이 있어 긴 알림은 `(1/3)` 처럼 여러 개로 나뉘어 전송됩니다.
+- 10초마다 오는 결제 리마인더 자체는 카카오톡으로 보내지 않습니다(텔레그램 전용). 마감/중단 알림만 전달됩니다.
 
 ## 개발 워크플로우
 
 ### 테스트 실행
 
 ```bash
-# 전체 테스트 실행
+# 전체 테스트 실행 (Docker가 있으면 Redis 컨테이너를 자동으로 띄우고,
+# 없으면 REDIS_HOST/REDIS_PORT(기본 localhost:6379)의 로컬 Redis를 사용)
 make test
 
-# API 엔드포인트 테스트만 실행
-make test-api
-
-# Korail 로직 테스트만 실행
-make test-logic
+make test-unit          # tests/unit
+make test-integration   # tests/integration
+make test-e2e           # tests/e2e
 ```
 
-**테스트 구성:**
-- `tests/test_api.py` - Flask API 엔드포인트 테스트
-  - `/telebot` 엔드포인트 존재 확인
-  - `/check_payment` 엔드포인트 존재 확인
-  - CORS 헤더 확인
-  - 404 에러 처리 확인
-
-- `tests/test_korail_logic.py` - Korail 예약 로직 테스트
-  - pykorail 라이브러리 import 확인
-  - 필수 클래스 (Korail, TrainType, ReserveOption) 확인
-  - Flask 및 Telegram Bot 의존성 확인
-  - 결제 리마인더 시간 설정 (10분, 10초 간격) 확인
+자세한 구성은 [tests/README.md](tests/README.md)를 참고하세요.
 
 ### 의존성 추가 시
 ```bash

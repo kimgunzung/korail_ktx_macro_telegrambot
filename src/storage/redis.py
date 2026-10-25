@@ -6,7 +6,7 @@ import redis
 
 from models import (
     UserSession, RunningReservation, PaymentStatus,
-    MultiReservationStatus, UserProgress, UserCredentials, TrainSearchParams
+    MultiReservationStatus, UserProgress, UserCredentials, TrainSearchParams, KakaoTokens
 )
 from storage.base import StorageInterface
 from config.settings import settings
@@ -392,6 +392,48 @@ class RedisStorage(StorageInterface):
         logger.warning(f"Payment timeout after {timeout}s")
         return False
 
+    # ==================== KakaoTalk Link Management ====================
+
+    def get_kakao_tokens(self, chat_id: int) -> Optional[KakaoTokens]:
+        """Get the Kakao OAuth tokens linked to a chat ID."""
+        data = self.redis.get(f"kakao_tokens:{chat_id}")
+        if not data:
+            return None
+        try:
+            d = json.loads(data)
+            return KakaoTokens(
+                chat_id=d["chat_id"],
+                access_token=d["access_token"],
+                refresh_token=d.get("refresh_token", ""),
+                expires_at=float(d.get("expires_at", 0)),
+                refresh_expires_at=float(d.get("refresh_expires_at", 0)),
+                linked_at=float(d.get("linked_at", 0)),
+            )
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError) as e:
+            logger.error(f"Failed to deserialize Kakao tokens: {e}")
+            return None
+
+    def save_kakao_tokens(self, tokens: KakaoTokens) -> None:
+        """Save Kakao OAuth tokens (kept until the refresh token expires)."""
+        key = f"kakao_tokens:{tokens.chat_id}"
+        data = json.dumps({
+            "chat_id": tokens.chat_id,
+            "access_token": tokens.access_token,
+            "refresh_token": tokens.refresh_token,
+            "expires_at": tokens.expires_at,
+            "refresh_expires_at": tokens.refresh_expires_at,
+            "linked_at": tokens.linked_at,
+        })
+        ttl = int(tokens.refresh_expires_at - time.time())
+        if ttl > 0:
+            self.redis.setex(key, ttl, data)
+        else:
+            self.redis.set(key, data)
+
+    def delete_kakao_tokens(self, chat_id: int) -> None:
+        """Remove the Kakao link of a chat ID."""
+        self.redis.delete(f"kakao_tokens:{chat_id}")
+
     # ==================== Serialization Helpers ====================
 
     def _serialize_user_session(self, session: UserSession) -> dict:
@@ -464,6 +506,7 @@ class RedisStorage(StorageInterface):
             "chat_id": reservation.chat_id,
             "process_id": reservation.process_id,
             "korail_id": reservation.korail_id,
+            "started_at": reservation.started_at.isoformat() if reservation.started_at else None,
             "search_params": {
                 "dep_date": reservation.search_params.dep_date,
                 "src_locate": reservation.search_params.src_locate,
@@ -492,12 +535,17 @@ class RedisStorage(StorageInterface):
             seat_strategy=p["seat_strategy"]
         )
 
-        return RunningReservation(
+        from datetime import datetime
+
+        reservation = RunningReservation(
             chat_id=data["chat_id"],
             process_id=data["process_id"],
             korail_id=data["korail_id"],
             search_params=search_params
         )
+        if data.get("started_at"):
+            reservation.started_at = datetime.fromisoformat(data["started_at"])
+        return reservation
 
     def _serialize_payment_status(self, status: PaymentStatus) -> dict:
         """Serialize PaymentStatus to dict."""

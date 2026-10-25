@@ -331,3 +331,44 @@ class TestFullReservationFlow:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+class TestCommandGuards:
+    """/start and /cancel behaviour around a running background reservation."""
+
+    def setup_method(self):
+        self.storage = RedisStorage()
+        self.telegram = Mock(spec=TelegramService)
+        self.reservation = Mock(spec=ReservationService)
+        self.payment_reminder = Mock(spec=PaymentReminderService)
+        self.command_handler = CommandHandler(
+            self.storage, self.telegram, self.reservation, self.payment_reminder
+        )
+
+    def teardown_method(self):
+        self.storage.redis.flushdb()
+
+    def _running(self, chat_id=12345):
+        from models import RunningReservation, TrainSearchParams
+        self.storage.save_running_reservation(RunningReservation(
+            chat_id=chat_id, process_id=4321, korail_id="010-1234-5678",
+            search_params=TrainSearchParams(dep_date="20991231", src_locate="서울", dst_locate="부산", dep_time="090000")
+        ))
+
+    def test_start_refused_while_reservation_running(self):
+        self._running()
+        self.command_handler.route_command(12345, "/start")
+        assert self.storage.get_user_session(12345) is None
+        text = self.telegram.send_message.call_args.args[1]
+        assert "이미 예약이 진행 중" in text and "서울" in text
+
+    def test_cancel_sends_single_message_when_nothing_running(self):
+        self.reservation.cancel_reservation.return_value = False
+        self.command_handler.route_command(12345, "/cancel")
+        assert self.telegram.send_message.call_count == 1
+        assert "취소" in self.telegram.send_message.call_args.args[1]
+
+    def test_cancel_relies_on_service_message_when_running(self):
+        self.reservation.cancel_reservation.return_value = True
+        self.command_handler.route_command(12345, "/cancel")
+        self.telegram.send_message.assert_not_called()

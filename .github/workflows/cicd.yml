@@ -63,6 +63,9 @@ jobs:
                 USERPW=${{ secrets.ADMIN_PASSWD}}
                 BOTTOKEN=${{ secrets.TELEGRAM_BOTTOKEN }}
                 ALLOW_LIST=${{ vars.ALLOW_LIST }}
+                PUBLIC_BASE_URL=${{ vars.PUBLIC_BASE_URL }}
+                KAKAO_REST_API_KEY=${{ secrets.KAKAO_REST_API_KEY }}
+                KAKAO_CLIENT_SECRET=${{ secrets.KAKAO_CLIENT_SECRET }}
                 REDIS_HOST=redis
                 REDIS_PORT=6379
                 REDIS_DB=0

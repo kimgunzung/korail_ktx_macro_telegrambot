@@ -2,7 +2,7 @@
 from abc import ABC, abstractmethod
 from typing import Optional, List
 
-from models import UserSession, RunningReservation, PaymentStatus, MultiReservationStatus
+from models import UserSession, RunningReservation, PaymentStatus, MultiReservationStatus, KakaoTokens
 
 
 class StorageInterface(ABC):
@@ -137,6 +137,22 @@ class StorageInterface(ABC):
     @abstractmethod
     def get_all_multi_reservation_statuses(self) -> List[MultiReservationStatus]:
         """Get all multi-reservation statuses."""
+        pass
+
+    # KakaoTalk Link Management
+    @abstractmethod
+    def get_kakao_tokens(self, chat_id: int) -> Optional[KakaoTokens]:
+        """Get the Kakao OAuth tokens linked to a chat ID."""
+        pass
+
+    @abstractmethod
+    def save_kakao_tokens(self, tokens: KakaoTokens) -> None:
+        """Save Kakao OAuth tokens."""
+        pass
+
+    @abstractmethod
+    def delete_kakao_tokens(self, chat_id: int) -> None:
+        """Remove the Kakao link of a chat ID."""
         pass
 
     # Debug Mode Management

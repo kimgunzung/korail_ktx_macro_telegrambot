@@ -4,7 +4,11 @@ from typing import Optional
 from config.settings import settings
 from models import UserSession, UserProgress, UserCredentials
 from storage.base import StorageInterface
-from services import TelegramService, ReservationService, MessageTemplates, KorailService, PaymentReminderService
+from services import (
+    TelegramService, ReservationService, MessageTemplates, KorailService, PaymentReminderService,
+    KakaoService, KakaoAuthError, KakaoError,
+)
+from telegramBot.messages import Messages
 from utils.logger import get_logger, LoggerFactory
 
 logger = get_logger(__name__)
@@ -18,7 +22,8 @@ class CommandHandler:
         storage: StorageInterface,
         telegram_service: TelegramService,
         reservation_service: ReservationService,
-        payment_reminder_service: PaymentReminderService
+        payment_reminder_service: PaymentReminderService,
+        kakao_service: Optional[KakaoService] = None
     ):
         """
         Initialize command handler.
@@ -28,11 +33,13 @@ class CommandHandler:
             telegram_service: Telegram messaging service
             reservation_service: Reservation service
             payment_reminder_service: Payment reminder service
+            kakao_service: KakaoTalk link service (optional)
         """
         self.storage = storage
         self.telegram = telegram_service
         self.reservation = reservation_service
         self.payment_reminder = payment_reminder_service
+        self.kakao = kakao_service or KakaoService(storage)
 
     def handle_start(self, chat_id: int) -> None:
         """
@@ -42,6 +49,21 @@ class CommandHandler:
             chat_id: Telegram chat ID
         """
         logger.info(f"Handling /start for chat_id={chat_id}")
+
+        # A running background search must be cancelled explicitly; silently
+        # restarting the conversation would orphan the running process.
+        running = self.storage.get_running_reservation(chat_id)
+        if running:
+            p = running.search_params
+            self.telegram.send_message(chat_id, Messages.ALREADY_RUNNING.format(
+                depDate=p.dep_date,
+                srcLocate=p.src_locate,
+                dstLocate=p.dst_locate,
+                depTime=p.dep_time[:4],
+                trainTypeShow=p.train_type_display,
+                specialInfoShow=p.special_option_display,
+            ))
+            return
 
         # Get or create user session
         session = self.storage.get_user_session(chat_id)
@@ -70,8 +92,8 @@ class CommandHandler:
         """
         logger.info(f"Handling /cancel for chat_id={chat_id}")
 
-        # Cancel any running reservation
-        self.reservation.cancel_reservation(chat_id)
+        # Cancel any running reservation (sends its own confirmation when one was running)
+        cancelled_running = self.reservation.cancel_reservation(chat_id)
 
         # Reset user session
         session = self.storage.get_user_session(chat_id)
@@ -94,8 +116,9 @@ class CommandHandler:
         # Clear admin password waiting state if any
         self.storage.set_waiting_for_admin_password(chat_id, False)
 
-        # Send cancellation message
-        self.telegram.send_message(chat_id, "✅ 예약이 취소되었습니다.")
+        # Send cancellation message (once)
+        if not cancelled_running:
+            self.telegram.send_message(chat_id, Messages.CANCELLED)
 
 
     def handle_subscribe(self, chat_id: int) -> None:
@@ -213,8 +236,7 @@ class CommandHandler:
             sent_count = self.telegram.send_to_multiple(all_chat_ids, message)
             logger.info(f"Broadcast sent to {sent_count}/{len(all_chat_ids)} users")
         else:
-            # Default fun message if no message provided
-            self.telegram.send_to_multiple(all_chat_ids, "앙 기모띠")
+            self.telegram.send_message(chat_id, "사용법: /broadcast <보낼 메시지>")
 
     def handle_flush_redis(self, chat_id: int) -> None:
         """
@@ -251,6 +273,75 @@ class CommandHandler:
                 f"❌ Redis 초기화 실패: {str(e)}"
             )
 
+    # ==================== KakaoTalk ====================
+
+    def handle_kakao(self, chat_id: int) -> None:
+        """Handle /kakao: start (or show) the KakaoTalk link."""
+        logger.info(f"Handling /kakao for chat_id={chat_id}")
+        if not self.kakao.enabled:
+            self.telegram.send_message(chat_id, Messages.KAKAO_NOT_CONFIGURED)
+            return
+
+        linked_at = self.kakao.link_summary(chat_id)
+        if linked_at:
+            self.telegram.send_message(chat_id, Messages.KAKAO_ALREADY_LINKED.format(linked_at=linked_at))
+            return
+
+        auth_url = self.kakao.get_authorize_url(chat_id)
+        self.telegram.send_message(chat_id, Messages.KAKAO_LINK_GUIDE.format(auth_url=auth_url))
+
+    def handle_kakao_code(self, chat_id: int, code: str) -> None:
+        """Handle /kakao_code <code>: manual completion of the OAuth flow."""
+        logger.info(f"Handling /kakao_code for chat_id={chat_id}")
+        if not self.kakao.enabled:
+            self.telegram.send_message(chat_id, Messages.KAKAO_NOT_CONFIGURED)
+            return
+        if not code.strip():
+            self.telegram.send_message(chat_id, Messages.KAKAO_CODE_USAGE)
+            return
+        try:
+            self.kakao.exchange_code(chat_id, code)
+        except KakaoError as e:
+            self.telegram.send_message(chat_id, Messages.KAKAO_LINK_FAILED.format(reason=e))
+            return
+        self.telegram.send_message(chat_id, Messages.KAKAO_LINKED)
+        self._send_kakao_test(chat_id, notify_failure_only=True)
+
+    def handle_kakao_off(self, chat_id: int) -> None:
+        """Handle /kakao_off: drop the stored Kakao tokens."""
+        logger.info(f"Handling /kakao_off for chat_id={chat_id}")
+        if self.kakao.unlink(chat_id):
+            self.telegram.send_message(chat_id, Messages.KAKAO_UNLINKED)
+        else:
+            self.telegram.send_message(chat_id, Messages.KAKAO_NOT_LINKED)
+
+    def handle_kakao_test(self, chat_id: int) -> None:
+        """Handle /kakao_test: send a test memo to the linked Kakao account."""
+        logger.info(f"Handling /kakao_test for chat_id={chat_id}")
+        if not self.kakao.enabled:
+            self.telegram.send_message(chat_id, Messages.KAKAO_NOT_CONFIGURED)
+            return
+        if not self.kakao.is_linked(chat_id):
+            self.telegram.send_message(chat_id, Messages.KAKAO_NOT_LINKED)
+            return
+        self._send_kakao_test(chat_id)
+
+    def _send_kakao_test(self, chat_id: int, notify_failure_only: bool = False) -> None:
+        try:
+            self.kakao.send_memo(
+                chat_id,
+                "🚄 코레일 예매 봇 카카오톡 연동 테스트 메시지입니다.\n예약 결과 알림이 이 채팅으로 전달됩니다.",
+            )
+        except KakaoAuthError as e:
+            self.kakao.unlink(chat_id)
+            self.telegram.send_message(chat_id, Messages.KAKAO_TEST_FAILED.format(reason=e))
+            return
+        except KakaoError as e:
+            self.telegram.send_message(chat_id, Messages.KAKAO_TEST_FAILED.format(reason=e))
+            return
+        if not notify_failure_only:
+            self.telegram.send_message(chat_id, Messages.KAKAO_TEST_SENT)
+
     def handle_help(self, chat_id: int) -> None:
         """
         Handle /help command.
@@ -277,6 +368,7 @@ class CommandHandler:
             f"/start - 예약 시작\n"
             f"/cancel - 예약 취소\n"
             f"/status - 상태 확인\n"
+            f"/kakao - 카카오톡 연동\n"
             f"/help - 도움말\n\n"
             f"🔧 관리자 명령어는 별도로 문의하세요."
         )
@@ -307,10 +399,10 @@ class CommandHandler:
         if not self.is_command(text):
             return False
 
-        # Parse command and arguments
+        # Parse command and arguments ("/start@MyBot" is how groups address a bot)
         parts = text.split(' ', 1)
-        command = parts[0].lower()
-        args = parts[1] if len(parts) > 1 else ""
+        command = parts[0].lower().split('@', 1)[0]
+        args = parts[1].strip() if len(parts) > 1 else ""
 
         # Public commands
         if command == "/start":
@@ -321,6 +413,14 @@ class CommandHandler:
             self.handle_status(chat_id)
         elif command == "/help":
             self.handle_help(chat_id)
+        elif command == "/kakao":
+            self.handle_kakao(chat_id)
+        elif command == "/kakao_code":
+            self.handle_kakao_code(chat_id, args)
+        elif command == "/kakao_off":
+            self.handle_kakao_off(chat_id)
+        elif command == "/kakao_test":
+            self.handle_kakao_test(chat_id)
         # Admin commands - require authentication
         elif command == "/subscribe":
             self._handle_admin_command(chat_id, self.handle_subscribe, "/subscribe")

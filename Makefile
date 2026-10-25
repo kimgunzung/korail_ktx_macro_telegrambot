@@ -29,13 +29,17 @@ requirements:	## Generate requirements.txt from Pipfile.lock (for Docker)
 test:			## Run all tests with pytest
 	pipenv run pytest tests/ -v
 
-.PHONY: test-api
-test-api:		## Run API endpoint tests only
-	pipenv run pytest tests/test_api.py -v
+.PHONY: test-unit
+test-unit:		## Run unit tests only
+	pipenv run pytest tests/unit -v
 
-.PHONY: test-logic
-test-logic:		## Run Korail logic tests only
-	pipenv run pytest tests/test_korail_logic.py -v
+.PHONY: test-integration
+test-integration:	## Run integration tests only (needs Docker or a local Redis, see tests/README.md)
+	pipenv run pytest tests/integration -v
+
+.PHONY: test-e2e
+test-e2e:		## Run end-to-end flow tests only
+	pipenv run pytest tests/e2e -v
 
 .PHONY: build
 build:			## Build Docker Image

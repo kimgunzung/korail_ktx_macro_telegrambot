@@ -1,5 +1,5 @@
 """Data models for the application."""
-from models.user import UserCredentials, UserSession, UserProgress
+from models.user import UserCredentials, UserSession, UserProgress, KakaoTokens
 from models.reservation import (
     TrainSearchParams, RunningReservation, PaymentStatus,
     ReservationPaymentStatus, SingleReservationInfo, MultiReservationStatus
@@ -9,6 +9,7 @@ __all__ = [
     'UserCredentials',
     'UserSession',
     'UserProgress',
+    'KakaoTokens',
     'TrainSearchParams',
     'RunningReservation',
     'PaymentStatus',

@@ -15,9 +15,11 @@ from services import (
     KorailService,
     ReservationService,
     PaymentReminderService,
-    MultiReservationReminderService
+    MultiReservationReminderService,
+    KakaoService,
+    NotificationService,
 )
-from api import TelegramWebhook, PaymentCheckAPI
+from api import TelegramWebhook, PaymentCheckAPI, KakaoOAuthCallback
 from utils.logger import get_logger, LoggerFactory
 
 # Configure logging
@@ -51,8 +53,10 @@ except Exception as e:
     logger.error("Please ensure Redis is running and accessible")
     sys.exit(1)
 
-# Initialize services
-telegram_service = TelegramService(settings.TELEGRAM_BOT_TOKEN)
+# Initialize services. Everything talks to the user through `notifier`, which sends to
+# Telegram and mirrors important notifications to KakaoTalk for linked chats.
+kakao_service = KakaoService(storage)
+telegram_service = NotificationService(TelegramService(settings.TELEGRAM_BOT_TOKEN), kakao_service, storage)
 reservation_service = ReservationService(storage, telegram_service)
 payment_reminder_service = PaymentReminderService(storage, telegram_service)
 multi_reminder_service = MultiReservationReminderService(storage, telegram_service)
@@ -66,7 +70,18 @@ api.add_resource(
         'telegram_service': telegram_service,
         'reservation_service': reservation_service,
         'payment_reminder_service': payment_reminder_service,
-        'multi_reminder_service': multi_reminder_service
+        'multi_reminder_service': multi_reminder_service,
+        'kakao_service': kakao_service,
+    }
+)
+
+api.add_resource(
+    KakaoOAuthCallback,
+    '/kakao/oauth',
+    resource_class_kwargs={
+        'storage': storage,
+        'telegram_service': telegram_service,
+        'kakao_service': kakao_service,
     }
 )
 
@@ -89,6 +104,7 @@ logger.info(f"Redis: {settings.REDIS_HOST}:{settings.REDIS_PORT}/{settings.REDIS
 logger.info(f"Search interval: {settings.KORAIL_SEARCH_INTERVAL}s")
 logger.info(f"Payment timeout: {settings.PAYMENT_TIMEOUT_MINUTES}min")
 logger.info(f"Reminder interval: {settings.PAYMENT_REMINDER_INTERVAL_SECONDS}s")
+logger.info(f"KakaoTalk integration: {'enabled (' + settings.KAKAO_REDIRECT_URI + ')' if settings.kakao_enabled() else 'disabled'}")
 logger.info("="*60)
 
 if __name__ == '__main__':

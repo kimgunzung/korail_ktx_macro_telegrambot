@@ -1,4 +1,5 @@
 """User data models."""
+import time
 from dataclasses import dataclass, field
 from typing import Optional, TYPE_CHECKING
 
@@ -53,3 +54,33 @@ class UserProgress:
     PASSENGER_COUNT_INPUT_SUCCESS = 12  # New: passenger count selection
     SEAT_STRATEGY_INPUT_SUCCESS = 13  # New: seat allocation strategy
     FINDING_TICKET = 14  # Updated from 12 to 14
+
+
+@dataclass
+class KakaoTokens:
+    """OAuth tokens of the Kakao account linked to a Telegram chat."""
+    chat_id: int
+    access_token: str
+    refresh_token: str
+    expires_at: float            # unix time when the access token expires
+    refresh_expires_at: float    # unix time when the refresh token expires
+    linked_at: float = field(default_factory=time.time)
+
+    @classmethod
+    def from_token_response(cls, chat_id: int, payload: dict) -> "KakaoTokens":
+        """Build from Kakao's /oauth/token JSON response."""
+        now = time.time()
+        return cls(
+            chat_id=chat_id,
+            access_token=payload["access_token"],
+            refresh_token=payload.get("refresh_token", ""),
+            expires_at=now + float(payload.get("expires_in", 0)),
+            refresh_expires_at=now + float(payload.get("refresh_token_expires_in", 0)),
+            linked_at=now,
+        )
+
+    def access_token_expires_within(self, seconds: float) -> bool:
+        return time.time() + seconds >= self.expires_at
+
+    def refresh_token_expired(self) -> bool:
+        return not self.refresh_token or time.time() >= self.refresh_expires_at

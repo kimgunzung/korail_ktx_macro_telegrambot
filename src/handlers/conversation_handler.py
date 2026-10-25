@@ -170,6 +170,24 @@ class ConversationHandler:
 
     def _handle_password_input(self, chat_id: int, text: str, session: UserSession) -> None:
         """Handle password input and login."""
+        # After a failed login the user may answer Y (re-enter account) or N (cancel),
+        # as offered by LOGIN_FAILED_RETRY. Real passwords are at least 4 characters,
+        # so Y/N/예/아니오 can never be mistaken for one.
+        if session.train_info.get('loginFailed'):
+            is_yes, _ = InputValidator.validate_yes_no(text)
+            if is_yes is True:
+                session.train_info.pop('loginFailed', None)
+                session.last_action = UserProgress.START_ACCEPTED
+                self.storage.save_user_session(session)
+                self.telegram.send_message(chat_id, MessageTemplates.request_phone_number())
+                return
+            if is_yes is False:
+                session.reset()
+                self.storage.save_user_session(session)
+                from telegramBot.messages import Messages
+                self.telegram.send_message(chat_id, Messages.CANCELLED_BY_USER)
+                return
+
         # Validate password
         is_valid, error = InputValidator.validate_password(text)
         if not is_valid:
@@ -186,13 +204,18 @@ class ConversationHandler:
         # Try login
         korail = KorailService()
         if korail.login(username, password):
+            session.train_info.pop('loginFailed', None)
             session.last_action = UserProgress.PW_INPUT_SUCCESS
             self.storage.save_user_session(session)
             self.telegram.send_message(chat_id, MessageTemplates.login_success())
         else:
-            # Login failed - ask for retry
-            self.telegram.send_message(chat_id, MessageTemplates.login_failure(username))
-            # Don't change state - wait for retry input
+            # Login failed - ask for retry, keep state so the next input is tried again
+            session.train_info['loginFailed'] = True
+            self.storage.save_user_session(session)
+            failure = MessageTemplates.login_failure(username)
+            if korail.last_login_error:
+                failure += f"\n서버 응답: {korail.last_login_error}"
+            self.telegram.send_message(chat_id, failure)
 
     def _handle_date_input(self, chat_id: int, text: str, session: UserSession) -> None:
         """Handle departure date input."""
@@ -263,6 +286,15 @@ class ConversationHandler:
             if not is_valid:
                 self.telegram.send_message(chat_id, error)
                 return
+
+        dep_time = session.train_info.get('depTime', '000000')[:4]
+        if text != "2400" and text < dep_time:
+            self.telegram.send_message(
+                chat_id,
+                f"❌ 검색 종료 시각({text})이 검색 시작 시각({dep_time})보다 빠릅니다.\n"
+                f"시작 시각 이후의 시각을 입력하거나 2400을 입력해주세요."
+            )
+            return
 
         session.train_info['maxDepTime'] = text
         session.last_action = UserProgress.MAX_DEP_TIME_INPUT_SUCCESS
@@ -371,14 +403,15 @@ class ConversationHandler:
         seat_strategy_display = session.train_info.get('seatStrategyShow', '1명')
 
         from telegramBot.messages import Messages
+        info = session.train_info
         summary = Messages.CONFIRM_RESERVATION.format(
-            depDate=session.train_info['depDate'],
-            srcLocate=session.train_info['srcLocate'],
-            dstLocate=session.train_info['dstLocate'],
-            depTime=session.train_info['depTime'][:4],
-            maxDepTime=session.train_info['maxDepTime'],
-            trainTypeShow=session.train_info['trainTypeShow'],
-            specialInfoShow=session.train_info['specialInfoShow'],
+            depDate=info.get('depDate', 'N/A'),
+            srcLocate=info.get('srcLocate', 'N/A'),
+            dstLocate=info.get('dstLocate', 'N/A'),
+            depTime=info.get('depTime', 'N/A')[:4],
+            maxDepTime=info.get('maxDepTime', 'N/A'),
+            trainTypeShow=info.get('trainTypeShow', 'N/A'),
+            specialInfoShow=info.get('specialInfoShow', 'N/A'),
             passengerCount=passenger_count,
             seatStrategy=seat_strategy_display
         )

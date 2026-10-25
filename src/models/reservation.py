@@ -1,5 +1,5 @@
 """Reservation data models."""
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from typing import Optional, List
@@ -50,7 +50,8 @@ class RunningReservation:
     process_id: int
     korail_id: str
     search_params: TrainSearchParams
-    started_at: datetime = datetime.now()
+    # default_factory: a plain ``datetime.now()`` default is evaluated once at import time
+    started_at: datetime = field(default_factory=lambda: datetime.now())
 
 
 @dataclass
@@ -58,8 +59,17 @@ class PaymentStatus:
     """Payment completion status for a reservation."""
     chat_id: int
     completed: bool = False
-    reservation_time: Optional[datetime] = None
+    reservation_time: Optional[datetime] = field(default_factory=lambda: datetime.now())
     reminder_active: bool = False
+
+    @property
+    def created_at(self) -> Optional[datetime]:
+        """Alias of ``reservation_time`` (when the reminder/reservation was created)."""
+        return self.reservation_time
+
+    @created_at.setter
+    def created_at(self, value: Optional[datetime]) -> None:
+        self.reservation_time = value
 
 
 class ReservationPaymentStatus(Enum):

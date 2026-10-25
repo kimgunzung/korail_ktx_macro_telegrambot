@@ -392,10 +392,11 @@ class KorailService:
             kept = []
             for train in trains:
                 dep_time_int = self._extract_departure_time(train)
-                if 0 < dep_time_int < max_time:
+                # Inclusive: "1800까지" means a train leaving at 18:00 still qualifies
+                if 0 < dep_time_int <= max_time:
                     kept.append(train)
                 elif verbose:
-                    logger.debug(f"  ❌ Filtered out: {dep_time_int} >= {max_time}")
+                    logger.debug(f"  ❌ Filtered out: {dep_time_int} > {max_time}")
             trains = kept
             if verbose:
                 logger.debug(f"📊 After max_dep_time filter: {len(trains)} trains remain")

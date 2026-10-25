@@ -3,6 +3,7 @@
 
 모든 봇 메시지를 중앙에서 관리하여 유지보수성을 향상시킵니다.
 """
+from config.settings import settings
 
 
 class Messages:
@@ -12,7 +13,7 @@ class Messages:
     WELCOME = """🚄 근삼 코레일 봇을 이용해 주셔서 감사합니다.
 
 본 프로그램은 매진 열차 자동 예약을 위한 서비스입니다.
-예약 완료 시 결제는 10분 이내에 직접 진행해주셔야 합니다.
+예약 완료 시 결제는 제한 시간 내에 직접 진행해주셔야 합니다.
 
 📋 예약 정보 입력 순서
 ━━━━━━━━━━━━━━━━
@@ -34,6 +35,11 @@ class Messages:
 ℹ️ 정보 확인
   /status - 예약 상태 확인
   /help - 도움말 보기
+
+💬 카카오톡 연동
+  /kakao - 카카오톡 연동 (예약 결과를 카카오톡 '나와의 채팅'으로도 받기)
+  /kakao_test - 카카오톡 테스트 메시지 전송
+  /kakao_off - 카카오톡 연동 해제
 
 🔧 관리자 명령어 (인증 필요)
   /subscribe - 알림 구독
@@ -263,11 +269,43 @@ class Messages:
 
     PAYMENT_REMINDER_TIMEOUT = """⏰ 결제 리마인더 종료
 
-예약 후 10분이 경과하여 리마인더가 자동 종료되었습니다.
+예약 후 {minutes}분이 경과하여 리마인더가 자동 종료되었습니다.
 결제를 완료하지 않으셨다면 예약이 취소되었을 수 있습니다.
 
 💡 코레일 사이트에서 예약 상태를 확인해주세요.
 """
+
+    # ========== 카카오톡 연동 메시지 ==========
+    KAKAO_NOT_CONFIGURED = """⚠️ 카카오톡 연동이 서버에 설정되어 있지 않습니다.
+
+관리자가 KAKAO_REST_API_KEY 와 KAKAO_REDIRECT_URI(또는 PUBLIC_BASE_URL)를 설정해야 합니다.
+"""
+
+    KAKAO_LINK_GUIDE = """💬 카카오톡 연동
+
+아래 링크를 열어 카카오 계정으로 로그인하고 '카카오톡 메시지 전송' 권한에 동의해주세요.
+연동이 완료되면 예약 성공/실패, 결제 마감 알림을 카카오톡 '나와의 채팅'으로도 보내드립니다.
+
+🔗 {auth_url}
+
+💡 링크가 열리는 페이지에서 바로 연동이 끝나지 않으면, 주소창의 code= 뒤의 값을 복사해서
+/kakao_code <코드> 형식으로 보내주세요.
+"""
+
+    KAKAO_ALREADY_LINKED = """✅ 이미 카카오톡이 연동되어 있습니다. (연동일: {linked_at})
+
+/kakao_test - 테스트 메시지 보내기
+/kakao_off - 연동 해제
+"""
+
+    KAKAO_LINKED = "✅ 카카오톡 연동이 완료되었습니다!\n\n이제 예약 결과 알림을 카카오톡으로도 받게 됩니다."
+    KAKAO_LINK_FAILED = "❌ 카카오톡 연동에 실패했습니다.\n\n사유: {reason}\n\n/kakao 로 다시 시도해주세요."
+    KAKAO_UNLINKED = "✅ 카카오톡 연동이 해제되었습니다."
+    KAKAO_NOT_LINKED = "ℹ️ 카카오톡이 연동되어 있지 않습니다.\n/kakao 로 연동을 시작하세요."
+    KAKAO_TEST_SENT = "✅ 카카오톡으로 테스트 메시지를 보냈습니다. '나와의 채팅'을 확인해주세요."
+    KAKAO_TEST_FAILED = "❌ 카카오톡 전송에 실패했습니다.\n\n사유: {reason}\n\n/kakao 로 다시 연동해보세요."
+    KAKAO_LINK_EXPIRED = "⚠️ 카카오톡 연동이 만료되어 알림을 보낼 수 없습니다.\n/kakao 로 다시 연동해주세요."
+    KAKAO_CODE_USAGE = "사용법: /kakao_code <인증 코드>\n\n/kakao 링크를 연 뒤 주소창의 code= 뒤에 있는 값을 붙여넣으세요."
 
     # ========== 관리자 메시지 ==========
     ADMIN_AUTH_REQUIRED = "🔐 관리자 인증이 필요합니다.\n관리자 비밀번호를 입력해주세요."
@@ -347,6 +385,11 @@ class Messages:
 서둘러 결제를 완료해주세요!
 💡 결제 완료 후 아무 메시지나 입력하면 알림이 중단됩니다.
 """
+
+    @staticmethod
+    def payment_reminder_timeout():
+        """Reminder timeout message with the configured payment timeout."""
+        return Messages.PAYMENT_REMINDER_TIMEOUT.format(minutes=settings.PAYMENT_TIMEOUT_MINUTES)
 
 
 class MessageService:

@@ -52,8 +52,61 @@ class UserProgress:
     TRAIN_TYPE_INPUT_SUCCESS = 10
     SPECIAL_INPUT_SUCCESS = 11
     PASSENGER_COUNT_INPUT_SUCCESS = 12  # New: passenger count selection
-    SEAT_STRATEGY_INPUT_SUCCESS = 13  # New: seat allocation strategy
-    FINDING_TICKET = 14  # Updated from 12 to 14
+    SEAT_STRATEGY_INPUT_SUCCESS = 13  # Final confirmation shown, waiting for Y/N
+    FINDING_TICKET = 14  # Background search running
+
+    # Optional automatic card payment (asked between seat strategy and final confirmation).
+    # Numbered after FINDING_TICKET so the long-lived state keeps its value.
+    CARD_CHOICE_PENDING = 15      # "자동 결제를 사용할까요?" Y/N
+    CARD_NUMBER_PENDING = 16
+    CARD_EXPIRE_PENDING = 17
+    CARD_PASSWORD_PENDING = 18
+    CARD_VERIFY_PENDING = 19
+
+
+@dataclass
+class CardInfo:
+    """Credit card used for automatic payment right after a reservation succeeds.
+
+    Lives only for the duration of the conversation (short-TTL Redis key) and in
+    the memory of the background process; never written to logs.
+    """
+    number: str          # digits only
+    expire: str          # YYMM
+    password: str        # first two digits of the card password
+    verify_number: str   # YYMMDD birth date (personal) or 10-digit business number (corporate)
+    installment: int = 0
+
+    @property
+    def is_corporate(self) -> bool:
+        return len(self.verify_number) == 10
+
+    @property
+    def masked(self) -> str:
+        """Display form, e.g. ``****1234``."""
+        return f"****{self.number[-4:]}" if len(self.number) >= 4 else "****"
+
+    def to_dict(self) -> dict:
+        return {
+            "number": self.number,
+            "expire": self.expire,
+            "password": self.password,
+            "verify_number": self.verify_number,
+            "installment": self.installment,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "CardInfo":
+        return cls(
+            number=str(data["number"]),
+            expire=str(data["expire"]),
+            password=str(data["password"]),
+            verify_number=str(data["verify_number"]),
+            installment=int(data.get("installment", 0)),
+        )
+
+    def __repr__(self) -> str:
+        return f"CardInfo(number={self.masked!r}, installment={self.installment})"
 
 
 @dataclass

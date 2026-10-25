@@ -289,8 +289,14 @@ class TestConversationHandler:
         self.handler.handle_message(chat_id, "1")
         updated_session = self.storage.get_user_session(chat_id)
         assert updated_session.train_info['passengerCount'] == 1
-        assert updated_session.last_action == UserProgress.SEAT_STRATEGY_INPUT_SUCCESS
         assert updated_session.train_info['seatStrategy'] == 'consecutive'
+        # Single passenger skips the seat strategy and is offered automatic payment
+        assert updated_session.last_action == UserProgress.CARD_CHOICE_PENDING
+        assert "자동 결제" in self.telegram.send_message.call_args.args[1]
+
+        self.handler.handle_message(chat_id, "N")
+        updated_session = self.storage.get_user_session(chat_id)
+        assert updated_session.last_action == UserProgress.SEAT_STRATEGY_INPUT_SUCCESS
 
     def test_passenger_count_multiple(self):
         """Test multiple passenger count."""
@@ -323,7 +329,7 @@ class TestConversationHandler:
         # Select consecutive
         self.handler.handle_message(chat_id, "1")
         updated_session = self.storage.get_user_session(chat_id)
-        assert updated_session.last_action == UserProgress.SEAT_STRATEGY_INPUT_SUCCESS
+        assert updated_session.last_action == UserProgress.CARD_CHOICE_PENDING
         assert updated_session.train_info['seatStrategy'] == 'consecutive'
 
         # Reset and test random

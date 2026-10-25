@@ -5,10 +5,12 @@ This module is executed as a subprocess to continuously search for
 and attempt to reserve trains. It has been refactored to use the new
 service architecture while maintaining backward compatibility.
 """
+import json
 import sys
 import time
 import requests
 from datetime import datetime, timedelta
+from typing import Optional, Tuple
 
 # Add src to path
 import os
@@ -23,9 +25,9 @@ from services import (
     KakaoService, NotificationService,
 )
 from services.korail_service import (
-    DuplicateReservationError, KorailAccessRestrictedError, TrainType, ReserveOption
+    DuplicateReservationError, KorailAccessRestrictedError, PaymentError, TrainType, ReserveOption
 )
-from models import MultiReservationStatus, SingleReservationInfo, ReservationPaymentStatus
+from models import MultiReservationStatus, SingleReservationInfo, ReservationPaymentStatus, CardInfo
 from utils.logger import get_logger, LoggerFactory
 
 logger = get_logger(__name__)
@@ -63,6 +65,9 @@ class BackgroundReservationProcess:
         self.passenger_count = int(sys.argv[11]) if len(sys.argv) > 11 else 1
         self.seat_strategy = sys.argv[12] if len(sys.argv) > 12 else "consecutive"
 
+        # Card for automatic payment (JSON via environment; never logged)
+        self.card: Optional[CardInfo] = self._load_card_from_env()
+
         # Parse train type
         self.train_type = self._parse_train_type(self.train_type_str)
         self.reserve_option = self._parse_reserve_option(self.special_info_str)
@@ -99,7 +104,19 @@ class BackgroundReservationProcess:
         logger.info(f"  special_info_str: '{self.special_info_str}' -> {self.reserve_option}")
         logger.info(f"  passenger_count: {self.passenger_count}")
         logger.info(f"  seat_strategy: '{self.seat_strategy}'")
+        logger.info(f"  auto_payment: {self.card.masked if self.card else 'off'}")
         logger.info(f"========================================")
+
+    @staticmethod
+    def _load_card_from_env() -> Optional[CardInfo]:
+        raw = os.environ.pop("KORAIL_BOT_CARD", None)
+        if not raw:
+            return None
+        try:
+            return CardInfo.from_dict(json.loads(raw))
+        except (ValueError, KeyError, TypeError) as e:
+            logger.error(f"Ignoring malformed KORAIL_BOT_CARD: {type(e).__name__}")
+            return None
 
     def _parse_train_type(self, train_type_str: str) -> TrainType:
         """Parse train type from string."""
@@ -307,6 +324,11 @@ class BackgroundReservationProcess:
                 is_random = hasattr(reservation, '_is_random_allocation') and reservation._is_random_allocation
                 total_seats = getattr(reservation, '_total_seats', self.passenger_count)
 
+                # Automatic card payment (consecutive seating = one reservation)
+                paid, payment_text = False, ""
+                if self.card and not is_random:
+                    paid, payment_text = self._try_auto_payment(reservation)
+
                 # Build success message
                 if is_random and total_seats > 1:
                     all_reservations = getattr(reservation, '_all_reservations', [reservation])
@@ -349,10 +371,7 @@ class BackgroundReservationProcess:
 {reservation}
 ===================
 
-⚠️ 중요: {settings.PAYMENT_TIMEOUT_MINUTES}분내에 사이트에서 결제를 완료하지 않으면 예약이 취소됩니다!
-
-💡 결제 완료 후 아무 메시지나 입력하시면 리마인더 알림이 중단됩니다.
-🔗 결제 링크: {settings.KORAIL_PAYMENT_URL}
+{payment_text or self._manual_payment_text()}
 """
 
                 # Send callback with reservation metadata
@@ -361,7 +380,8 @@ class BackgroundReservationProcess:
                     status=0,
                     is_multi=is_random and total_seats > 1,
                     total_seats=total_seats,
-                    seat_strategy=self.seat_strategy
+                    seat_strategy=self.seat_strategy,
+                    paid=paid
                 )
 
                 # Note: Payment reminders will be started by main app after receiving callback
@@ -407,7 +427,53 @@ class BackgroundReservationProcess:
 
         logger.info(f"Reservation process ended for {self.username}")
 
-    def _update_multi_reservation_status(self, seat_index: int, reservation, total_seats: int) -> None:
+    # ------------------------------------------------------------ auto payment
+
+    def _manual_payment_text(self) -> str:
+        return (
+            f"⚠️ 중요: {settings.PAYMENT_TIMEOUT_MINUTES}분내에 사이트에서 결제를 완료하지 않으면 예약이 취소됩니다!\n\n"
+            f"💡 결제 완료 후 아무 메시지나 입력하시면 리마인더 알림이 중단됩니다.\n"
+            f"🔗 결제 링크: {settings.KORAIL_PAYMENT_URL}"
+        )
+
+    def _try_auto_payment(self, reservation) -> Tuple[bool, str]:
+        """
+        Pay ``reservation`` with the registered card.
+
+        Returns:
+            (paid, text) where ``text`` is the payment section of the user message:
+            a receipt on success, or the failure reason plus manual payment instructions.
+        """
+        if not self.card:
+            return False, ""
+        try:
+            price = self.korail.pay_reservation(reservation, self.card)
+        except KorailAccessRestrictedError as e:
+            logger.error(f"Payment blocked by Korail access restriction: {e}")
+            reason = f"코레일 이용 제한: {e}"
+        except PaymentError as e:
+            logger.warning(f"Automatic payment failed: {e}")
+            reason = str(e)
+        except Exception as e:  # pragma: no cover - defensive
+            logger.error(f"Unexpected auto payment error: {e}", exc_info=True)
+            reason = f"{type(e).__name__}: {e}"
+        else:
+            amount = f"{price:,}원" if price else "금액 미확인"
+            return True, (
+                f"💳 자동 결제 완료! (카드 {self.card.masked}, {amount})\n\n"
+                f"승차권이 발권되었습니다. 코레일 앱/홈페이지의 '승차권 확인'에서 확인하세요.\n"
+                f"🔗 {settings.KORAIL_PAYMENT_URL}"
+            )
+
+        return False, (
+            f"❌ 자동 결제 실패 (카드 {self.card.masked})\n"
+            f"사유: {reason}\n\n"
+            f"예약은 유지되어 있으니 직접 결제해주세요.\n\n"
+            f"{self._manual_payment_text()}"
+        )
+
+    def _update_multi_reservation_status(self, seat_index: int, reservation, total_seats: int,
+                                         paid: bool = False) -> None:
         """
         Create or update MultiReservationStatus for tracking individual seat payment.
 
@@ -448,7 +514,7 @@ class BackgroundReservationProcess:
                 reservation_obj=reservation,
                 reserved_at=now,
                 expires_at=expires_at,
-                status=ReservationPaymentStatus.PENDING,
+                status=ReservationPaymentStatus.PAID if paid else ReservationPaymentStatus.PENDING,
                 seat_number=seat_index + 1,
                 train_info=str(reservation)
             )
@@ -514,7 +580,8 @@ class BackgroundReservationProcess:
             logger.error(f"Failed to create MultiReservationStatus: {e}", exc_info=True)
 
     def _send_callback(self, message: str, status: int = 0, is_multi: bool = False,
-                       total_seats: int = 1, seat_strategy: str = "consecutive"):
+                       total_seats: int = 1, seat_strategy: str = "consecutive",
+                       paid: bool = False):
         """
         Send callback to main app.
 
@@ -524,6 +591,7 @@ class BackgroundReservationProcess:
             is_multi: True if multi-reservation (random allocation with multiple seats)
             total_seats: Total number of seats reserved
             seat_strategy: Seat allocation strategy used
+            paid: True when the reservation(s) were already paid by card (no reminders)
         """
         try:
             callback_url = f"{settings.CALLBACK_BASE_URL}/telebot"
@@ -533,7 +601,8 @@ class BackgroundReservationProcess:
                 "status": status,
                 "isMulti": "1" if is_multi else "0",
                 "totalSeats": str(total_seats),
-                "seatStrategy": seat_strategy
+                "seatStrategy": seat_strategy,
+                "paid": "1" if paid else "0"
             }
 
             session = requests.session()
@@ -572,6 +641,7 @@ class BackgroundReservationProcess:
         self.storage.set_current_seat_index(self.chat_id, None)
 
         payment_timeout_seconds = settings.PAYMENT_TIMEOUT_MINUTES * 60
+        all_paid = self.card is not None  # becomes False as soon as one payment fails
 
         for seat_index in range(total_seats):
             logger.info(f"━━━ Seat {seat_index + 1}/{total_seats} ━━━")
@@ -606,23 +676,39 @@ class BackgroundReservationProcess:
             self.storage.save_partial_reservation(self.chat_id, seat_index, reservation_data)
             logger.info(f"✅ Seat {seat_index + 1} reserved and saved to Redis")
 
+            # Automatic card payment for this seat
+            paid, payment_text = (False, "")
+            if self.card:
+                paid, payment_text = self._try_auto_payment(reservation)
+                if not paid:
+                    all_paid = False
+                reservation_data["paid"] = paid
+                self.storage.save_partial_reservation(self.chat_id, seat_index, reservation_data)
+
             # Create or update MultiReservationStatus for reminder service
-            self._update_multi_reservation_status(seat_index, reservation, total_seats)
+            self._update_multi_reservation_status(seat_index, reservation, total_seats, paid=paid)
 
             # NOTE: Don't start reminder service here (subprocess doesn't share memory with main app)
             # Reminder will be started by main app when it receives the callback (status=2)
 
-            # NOW set current seat index for payment waiting
-            # This prevents "결제 대기중" message before reservation succeeds
-            self.storage.set_current_seat_index(self.chat_id, seat_index)
+            if not paid:
+                # NOW set current seat index for payment waiting
+                # This prevents "결제 대기중" message before reservation succeeds
+                self.storage.set_current_seat_index(self.chat_id, seat_index)
 
             # Send notification to user
             message = self._build_partial_reservation_message(
                 seat_index,
                 total_seats,
-                reservation
+                reservation,
+                payment_text
             )
-            self._send_callback(message, status=2, seat_strategy=self.seat_strategy)  # status=2: partial success
+            self._send_callback(message, status=2, seat_strategy=self.seat_strategy, paid=paid)  # status=2: partial success
+
+            if paid and seat_index < total_seats - 1:
+                logger.info("Seat paid automatically, moving on to the next seat...")
+                time.sleep(3)
+                continue
 
             # Wait for payment confirmation (or timeout)
             if seat_index < total_seats - 1:  # Not the last seat
@@ -658,8 +744,8 @@ class BackgroundReservationProcess:
         self.storage.set_current_seat_index(self.chat_id, None)  # Clear index
         all_reservations = self.storage.get_partial_reservations(self.chat_id)
 
-        final_message = self._build_final_random_message(all_reservations, total_seats)
-        self._send_callback(final_message, status=0, seat_strategy=self.seat_strategy)  # status=0: complete success
+        final_message = self._build_final_random_message(all_reservations, total_seats, all_paid)
+        self._send_callback(final_message, status=0, seat_strategy=self.seat_strategy, paid=all_paid)  # status=0: complete success
 
         logger.info(f"🎉 All {total_seats} seats reserved successfully!")
 
@@ -768,8 +854,23 @@ class BackgroundReservationProcess:
                 logger.debug(f"All {len(trains)} trains sold out in attempt #{attempts}")
                 time.sleep(self.korail._search_interval)
 
-    def _build_partial_reservation_message(self, seat_index: int, total_seats: int, reservation) -> str:
+    def _build_partial_reservation_message(self, seat_index: int, total_seats: int, reservation,
+                                           payment_text: str = "") -> str:
         """Build message for partial reservation success."""
+        if payment_text and payment_text.startswith("💳"):
+            next_text = "다음 좌석 예약을 바로 시작합니다." if seat_index < total_seats - 1 else ""
+            return f"""
+🎉 {seat_index + 1}/{total_seats}번째 좌석 예약 성공!
+
+━━━━━━━━━━━━━━━━━━━━
+{reservation}
+━━━━━━━━━━━━━━━━━━━━
+
+{payment_text}
+
+{next_text}
+"""
+        failure_text = f"{payment_text}\n\n" if payment_text else ""
         return f"""
 🎉 {seat_index + 1}/{total_seats}번째 좌석 예약 성공!
 
@@ -777,7 +878,7 @@ class BackgroundReservationProcess:
 {reservation}
 ━━━━━━━━━━━━━━━━━━━━
 
-⏰ 예약 후 {settings.PAYMENT_TIMEOUT_MINUTES}분 이내 결제하세요!
+{failure_text}⏰ 예약 후 {settings.PAYMENT_TIMEOUT_MINUTES}분 이내 결제하세요!
 🔗 결제: {settings.KORAIL_PAYMENT_URL}
 
 💡 결제 후 아무 메시지나 보내면 다음 좌석 예약이 시작됩니다.
@@ -785,12 +886,26 @@ class BackgroundReservationProcess:
 ⚠️ {settings.PAYMENT_TIMEOUT_MINUTES}분 동안 메시지가 없으면 자동으로 다음 좌석 예약을 진행합니다.
 """
 
-    def _build_final_random_message(self, all_reservations: list, total_seats: int) -> str:
+    def _build_final_random_message(self, all_reservations: list, total_seats: int,
+                                    all_paid: bool = False) -> str:
         """Build final message for all random reservations complete."""
         reservation_details = "\n".join([
-            f"좌석 {i+1}: {r.get('train_info', 'N/A')}"
+            f"좌석 {i+1}: {r.get('train_info', 'N/A')}" + (" 💳 결제완료" if r.get('paid') else "")
             for i, r in enumerate(all_reservations)
         ])
+
+        if all_paid:
+            payment_notice = (
+                f"💳 모든 좌석이 카드({self.card.masked})로 자동 결제되었습니다.\n"
+                f"코레일 앱/홈페이지의 '승차권 확인'에서 확인하세요."
+            )
+        else:
+            payment_notice = (
+                f"⚠️ 중요 안내:\n"
+                f"• 결제되지 않은 좌석은 {settings.PAYMENT_TIMEOUT_MINUTES}분 내 결제해야 합니다!\n"
+                f"• 미결제 시 자동 취소됩니다!\n\n"
+                f"🔗 결제 링크: {settings.KORAIL_PAYMENT_URL}"
+            )
 
         return f"""
 🎉🎉 모든 좌석 예약 완료! 🎉🎉
@@ -802,11 +917,7 @@ class BackgroundReservationProcess:
 {reservation_details}
 ━━━━━━━━━━━━━━━━━━━━
 
-⚠️ 중요 안내:
-• 모든 좌석을 {settings.PAYMENT_TIMEOUT_MINUTES}분 내 결제해야 합니다!
-• 미결제 시 자동 취소됩니다!
-
-🔗 결제 링크: {settings.KORAIL_PAYMENT_URL}
+{payment_notice}
 
 ✅ 축하합니다! 🎊
 """

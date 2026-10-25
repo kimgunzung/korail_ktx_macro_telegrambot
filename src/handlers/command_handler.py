@@ -101,8 +101,9 @@ class CommandHandler:
             session.reset()
             self.storage.save_user_session(session)
 
-        # Clear multi-reservation status (for random seating)
+        # Clear multi-reservation status (for random seating) and any card being entered
         self.storage.delete_multi_reservation_status(chat_id)
+        self.storage.delete_card_info(chat_id)
         logger.debug(f"Cleared multi-reservation status for chat_id={chat_id}")
 
         # Clear payment status and deactivate reminders

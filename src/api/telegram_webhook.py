@@ -8,10 +8,19 @@ from services import (
     TelegramService, ReservationService, PaymentReminderService, MultiReservationReminderService, KakaoService
 )
 from handlers import CommandHandler, ConversationHandler
-from models import PaymentStatus
+from models import PaymentStatus, UserProgress
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
+
+# Conversation states in which the user's message is a secret (never logged verbatim)
+SENSITIVE_STATES = frozenset({
+    UserProgress.ID_INPUT_SUCCESS,       # Korail password
+    UserProgress.CARD_NUMBER_PENDING,
+    UserProgress.CARD_EXPIRE_PENDING,
+    UserProgress.CARD_PASSWORD_PENDING,
+    UserProgress.CARD_VERIFY_PENDING,
+})
 
 
 class TelegramWebhook(Resource):
@@ -82,6 +91,7 @@ class TelegramWebhook(Resource):
                 logger.error(f"Invalid message format: {e}")
                 return make_response("OK")
 
+            message_id = message.get('message_id')
             text = message.get('text')
             if text is None:
                 # Photos, stickers, contacts... carry no text; nothing to route.
@@ -89,12 +99,21 @@ class TelegramWebhook(Resource):
                 return make_response("OK")
             text = text.strip()
 
-            logger.info(f"Received message from chat_id={chat_id}: {text}")
-
             # Get user session to check progress
             session = self.storage.get_user_session(chat_id)
             in_progress = session.in_progress if session else False
             progress_num = session.last_action if session else 0
+
+            # Never log secrets: Korail password, admin password and card details are
+            # plain text messages in these states.
+            sensitive = (
+                progress_num in SENSITIVE_STATES
+                or self.storage.is_waiting_for_admin_password(chat_id)
+            )
+            logger.info(
+                f"Received message from chat_id={chat_id}: "
+                f"{'<redacted>' if sensitive and not text.startswith('/') else text}"
+            )
 
             logger.debug(
                 f"chat_id={chat_id}, in_progress={in_progress}, "
@@ -179,7 +198,7 @@ class TelegramWebhook(Resource):
             # Handle conversation flow (non-command messages)
             if in_progress:
                 # Handle conversation flow
-                self.conversation_handler.handle_message(chat_id, text)
+                self.conversation_handler.handle_message(chat_id, text, message_id)
             else:
                 # No active session and not a command
                 self.telegram.send_message(
@@ -208,6 +227,7 @@ class TelegramWebhook(Resource):
             is_multi = request.args.get('isMulti', '0')
             total_seats = request.args.get('totalSeats', '1')
             seat_strategy = request.args.get('seatStrategy', 'consecutive')
+            paid = request.args.get('paid', '0') == '1'
 
             if not all([chat_id, msg, status]):
                 logger.warning("Incomplete callback parameters")
@@ -219,7 +239,7 @@ class TelegramWebhook(Resource):
 
             logger.info(
                 f"Callback from background process: chat_id={chat_id}, status={status}, "
-                f"is_multi={is_multi}, total_seats={total_seats}, seat_strategy={seat_strategy}"
+                f"is_multi={is_multi}, total_seats={total_seats}, seat_strategy={seat_strategy}, paid={paid}"
             )
 
             # Send message to user (mirrored to KakaoTalk when linked)
@@ -242,7 +262,7 @@ class TelegramWebhook(Resource):
 
                 # Check if multi-reservation status exists and start reminders if needed
                 multi_status = self.storage.get_multi_reservation_status(chat_id)
-                if multi_status:
+                if multi_status and not paid:
                     # Start multi-reservation reminders (checks for duplicates internally)
                     self.multi_reminder.start_reminders(chat_id)
 
@@ -263,7 +283,9 @@ class TelegramWebhook(Resource):
                 # Start appropriate payment reminders
                 # For random seating, multi-reminder is already running (started on first seat)
                 # Don't start duplicate reminder service
-                if seat_strategy == "random":
+                if paid:
+                    logger.info(f"Reservation already paid by card for chat_id={chat_id} - no reminders")
+                elif seat_strategy == "random":
                     logger.info(f"Random seating complete - multi-reminder already running for chat_id={chat_id}")
                     # Multi-reservation reminder was started on first partial callback (status=2)
                     # It will continue until all seats are paid or expired

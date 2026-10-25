@@ -2,7 +2,7 @@
 from abc import ABC, abstractmethod
 from typing import Optional, List
 
-from models import UserSession, RunningReservation, PaymentStatus, MultiReservationStatus, KakaoTokens
+from models import UserSession, RunningReservation, PaymentStatus, MultiReservationStatus, KakaoTokens, CardInfo
 
 
 class StorageInterface(ABC):
@@ -153,6 +153,22 @@ class StorageInterface(ABC):
     @abstractmethod
     def delete_kakao_tokens(self, chat_id: int) -> None:
         """Remove the Kakao link of a chat ID."""
+        pass
+
+    # Card Info (automatic payment) - short lived, conversation only
+    @abstractmethod
+    def get_card_info(self, chat_id: int) -> Optional[CardInfo]:
+        """Get the card registered for automatic payment during the current conversation."""
+        pass
+
+    @abstractmethod
+    def save_card_info(self, chat_id: int, card: CardInfo) -> None:
+        """Save card info with a short TTL."""
+        pass
+
+    @abstractmethod
+    def delete_card_info(self, chat_id: int) -> None:
+        """Forget the card info."""
         pass
 
     # Debug Mode Management

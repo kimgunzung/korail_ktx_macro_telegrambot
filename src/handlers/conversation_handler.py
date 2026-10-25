@@ -1,7 +1,8 @@
 """Conversation flow handler for reservation process."""
+from typing import Optional
 
 from config.settings import settings
-from models import UserSession, UserProgress, UserCredentials, TrainSearchParams
+from models import UserSession, UserProgress, UserCredentials, TrainSearchParams, CardInfo
 from storage.base import StorageInterface
 from services import TelegramService, KorailService, ReservationService, MessageTemplates
 from utils.validators import InputValidator
@@ -31,13 +32,14 @@ class ConversationHandler:
         self.telegram = telegram_service
         self.reservation = reservation_service
 
-    def handle_message(self, chat_id: int, text: str) -> None:
+    def handle_message(self, chat_id: int, text: str, message_id: Optional[int] = None) -> None:
         """
         Handle user message based on current conversation state.
 
         Args:
             chat_id: Telegram chat ID
             text: User's message text
+            message_id: Telegram message id (used to scrub card details from the chat)
         """
         # Get user session
         session = self.storage.get_user_session(chat_id)
@@ -81,6 +83,16 @@ class ConversationHandler:
             self._handle_passenger_count_input(chat_id, text, session)
         elif progress == UserProgress.PASSENGER_COUNT_INPUT_SUCCESS:
             self._handle_seat_strategy_input(chat_id, text, session)
+        elif progress == UserProgress.CARD_CHOICE_PENDING:
+            self._handle_auto_payment_choice(chat_id, text, session)
+        elif progress == UserProgress.CARD_NUMBER_PENDING:
+            self._handle_card_number_input(chat_id, text, session, message_id)
+        elif progress == UserProgress.CARD_EXPIRE_PENDING:
+            self._handle_card_expire_input(chat_id, text, session, message_id)
+        elif progress == UserProgress.CARD_PASSWORD_PENDING:
+            self._handle_card_password_input(chat_id, text, session, message_id)
+        elif progress == UserProgress.CARD_VERIFY_PENDING:
+            self._handle_card_verify_input(chat_id, text, session, message_id)
         elif progress == UserProgress.SEAT_STRATEGY_INPUT_SUCCESS:
             self._handle_final_confirmation(chat_id, text, session)
         else:
@@ -374,9 +386,7 @@ class ConversationHandler:
         else:
             # Single passenger, skip seat strategy
             session.train_info['seatStrategy'] = 'consecutive'
-            session.last_action = UserProgress.SEAT_STRATEGY_INPUT_SUCCESS
-            self.storage.save_user_session(session)
-            self._show_final_confirmation(chat_id, session)
+            self._ask_auto_payment(chat_id, session)
 
     def _handle_seat_strategy_input(self, chat_id: int, text: str, session: UserSession) -> None:
         """Handle seat strategy selection."""
@@ -392,9 +402,139 @@ class ConversationHandler:
 
         session.train_info['seatStrategy'] = strategy
         session.train_info['seatStrategyShow'] = strategy_display
+        self._ask_auto_payment(chat_id, session)
+
+    # ==================== Automatic card payment ====================
+
+    def _ask_auto_payment(self, chat_id: int, session: UserSession) -> None:
+        """Offer automatic card payment, or go straight to the final confirmation."""
+        from telegramBot.messages import Messages
+        self.storage.delete_card_info(chat_id)
+        session.train_info.pop('cardMask', None)
+        session.train_info.pop('cardCorporate', None)
+
+        if not settings.AUTO_PAYMENT_ENABLED:
+            session.last_action = UserProgress.SEAT_STRATEGY_INPUT_SUCCESS
+            self.storage.save_user_session(session)
+            self._show_final_confirmation(chat_id, session)
+            return
+
+        session.last_action = UserProgress.CARD_CHOICE_PENDING
+        self.storage.save_user_session(session)
+        self.telegram.send_message(
+            chat_id, Messages.REQUEST_AUTO_PAYMENT.format(minutes=settings.PAYMENT_TIMEOUT_MINUTES)
+        )
+
+    def _handle_auto_payment_choice(self, chat_id: int, text: str, session: UserSession) -> None:
+        """Y -> collect card details, N -> manual payment."""
+        from telegramBot.messages import Messages
+        is_yes, error = InputValidator.validate_yes_no(text)
+        if is_yes is True:
+            session.last_action = UserProgress.CARD_NUMBER_PENDING
+            self.storage.save_user_session(session)
+            self.telegram.send_message(chat_id, Messages.REQUEST_CARD_NUMBER)
+        elif is_yes is False:
+            session.last_action = UserProgress.SEAT_STRATEGY_INPUT_SUCCESS
+            self.storage.save_user_session(session)
+            self.telegram.send_message(
+                chat_id, Messages.AUTO_PAYMENT_SKIPPED.format(minutes=settings.PAYMENT_TIMEOUT_MINUTES)
+            )
+            self._show_final_confirmation(chat_id, session)
+        else:
+            self.telegram.send_message(chat_id, error)
+
+    def _scrub_message(self, chat_id: int, message_id: Optional[int]) -> None:
+        """Delete the user's message holding card details; warn if that is not possible."""
+        from telegramBot.messages import Messages
+        delete = getattr(self.telegram, "delete_message", None)
+        deleted = False
+        if message_id is not None and callable(delete):
+            try:
+                deleted = bool(delete(chat_id, message_id))
+            except Exception as e:  # pragma: no cover - defensive
+                logger.warning(f"delete_message failed for chat_id={chat_id}: {e}")
+        if not deleted:
+            self.telegram.send_message(chat_id, Messages.CARD_MESSAGE_DELETE_FAILED)
+
+    def _handle_card_number_input(self, chat_id: int, text: str, session: UserSession,
+                                  message_id: Optional[int]) -> None:
+        from telegramBot.messages import Messages
+        is_valid, error = InputValidator.validate_card_number(text)
+        self._scrub_message(chat_id, message_id)
+        if not is_valid:
+            self.telegram.send_message(chat_id, error)
+            return
+
+        number = InputValidator.normalize_card_number(text)
+        self.storage.save_card_info(chat_id, CardInfo(number=number, expire="", password="", verify_number=""))
+        session.train_info['cardMask'] = f"****{number[-4:]}"
+        session.last_action = UserProgress.CARD_EXPIRE_PENDING
+        self.storage.save_user_session(session)
+        self.telegram.send_message(chat_id, Messages.REQUEST_CARD_EXPIRE.format(masked=session.train_info['cardMask']))
+
+    def _pending_card(self, chat_id: int, session: UserSession) -> Optional[CardInfo]:
+        """Card being collected; None (and restart of the card step) when the TTL expired."""
+        from telegramBot.messages import Messages
+        card = self.storage.get_card_info(chat_id)
+        if card is None:
+            session.last_action = UserProgress.CARD_NUMBER_PENDING
+            self.storage.save_user_session(session)
+            self.telegram.send_message(chat_id, "⚠️ 카드 정보 입력 시간이 지났습니다. 처음부터 다시 입력해주세요.\n\n" + Messages.REQUEST_CARD_NUMBER)
+        return card
+
+    def _handle_card_expire_input(self, chat_id: int, text: str, session: UserSession,
+                                  message_id: Optional[int]) -> None:
+        from telegramBot.messages import Messages
+        is_valid, error = InputValidator.validate_card_expire(text)
+        self._scrub_message(chat_id, message_id)
+        if not is_valid:
+            self.telegram.send_message(chat_id, error)
+            return
+        card = self._pending_card(chat_id, session)
+        if card is None:
+            return
+        card.expire = InputValidator.normalize_card_expire(text)
+        self.storage.save_card_info(chat_id, card)
+        session.last_action = UserProgress.CARD_PASSWORD_PENDING
+        self.storage.save_user_session(session)
+        self.telegram.send_message(chat_id, Messages.REQUEST_CARD_PASSWORD)
+
+    def _handle_card_password_input(self, chat_id: int, text: str, session: UserSession,
+                                    message_id: Optional[int]) -> None:
+        from telegramBot.messages import Messages
+        is_valid, error = InputValidator.validate_card_password(text)
+        self._scrub_message(chat_id, message_id)
+        if not is_valid:
+            self.telegram.send_message(chat_id, error)
+            return
+        card = self._pending_card(chat_id, session)
+        if card is None:
+            return
+        card.password = text.strip()
+        self.storage.save_card_info(chat_id, card)
+        session.last_action = UserProgress.CARD_VERIFY_PENDING
+        self.storage.save_user_session(session)
+        self.telegram.send_message(chat_id, Messages.REQUEST_CARD_VERIFY)
+
+    def _handle_card_verify_input(self, chat_id: int, text: str, session: UserSession,
+                                  message_id: Optional[int]) -> None:
+        from telegramBot.messages import Messages
+        is_valid, error = InputValidator.validate_card_verify_number(text)
+        self._scrub_message(chat_id, message_id)
+        if not is_valid:
+            self.telegram.send_message(chat_id, error)
+            return
+        card = self._pending_card(chat_id, session)
+        if card is None:
+            return
+        card.verify_number = text.strip().replace("-", "")
+        self.storage.save_card_info(chat_id, card)
+        session.train_info['cardCorporate'] = card.is_corporate
         session.last_action = UserProgress.SEAT_STRATEGY_INPUT_SUCCESS
         self.storage.save_user_session(session)
-
+        self.telegram.send_message(chat_id, Messages.CARD_REGISTERED.format(
+            masked=card.masked, corporate=", 법인카드" if card.is_corporate else ""
+        ))
         self._show_final_confirmation(chat_id, session)
 
     def _show_final_confirmation(self, chat_id: int, session: UserSession) -> None:
@@ -404,7 +544,12 @@ class ConversationHandler:
 
         from telegramBot.messages import Messages
         info = session.train_info
+        if info.get('cardMask'):
+            payment = f"카드 자동 결제 ({info['cardMask']}{', 법인' if info.get('cardCorporate') else ''})"
+        else:
+            payment = "직접 결제 (예약 후 안내)"
         summary = Messages.CONFIRM_RESERVATION.format(
+            payment=payment,
             depDate=info.get('depDate', 'N/A'),
             srcLocate=info.get('srcLocate', 'N/A'),
             dstLocate=info.get('dstLocate', 'N/A'),
@@ -427,6 +572,7 @@ class ConversationHandler:
         elif is_yes is False:
             session.reset()
             self.storage.save_user_session(session)
+            self.storage.delete_card_info(chat_id)
             from telegramBot.messages import Messages
             self.telegram.send_message(chat_id, Messages.CANCELLED_BY_USER)
         else:
@@ -450,6 +596,17 @@ class ConversationHandler:
             seat_strategy=session.train_info.get('seatStrategy', 'consecutive')
         )
 
+        # Card for automatic payment (if registered). Complete cards only; a half-entered
+        # card (TTL expiry mid-conversation) is dropped and the user pays manually.
+        card = self.storage.get_card_info(chat_id) if session.train_info.get('cardMask') else None
+        if card and not (card.expire and card.password and card.verify_number):
+            card = None
+        if session.train_info.get('cardMask') and card is None:
+            self.telegram.send_message(
+                chat_id, "⚠️ 카드 정보가 만료되어 자동 결제 없이 진행합니다. 예약 후 직접 결제해주세요."
+            )
+            session.train_info.pop('cardMask', None)
+
         # Update session
         session.last_action = UserProgress.FINDING_TICKET
         self.storage.save_user_session(session)
@@ -459,8 +616,12 @@ class ConversationHandler:
             chat_id=chat_id,
             username=session.credentials.korail_id,
             password=session.credentials.korail_pw,
-            search_params=search_params
+            search_params=search_params,
+            card=card
         )
+
+        # The background process now holds the card in memory; nothing else needs it.
+        self.storage.delete_card_info(chat_id)
 
         if not success:
             logger.error(f"Failed to start reservation for chat_id={chat_id}")

@@ -6,7 +6,7 @@ import redis
 
 from models import (
     UserSession, RunningReservation, PaymentStatus,
-    MultiReservationStatus, UserProgress, UserCredentials, TrainSearchParams, KakaoTokens
+    MultiReservationStatus, UserProgress, UserCredentials, TrainSearchParams, KakaoTokens, CardInfo
 )
 from storage.base import StorageInterface
 from config.settings import settings
@@ -433,6 +433,29 @@ class RedisStorage(StorageInterface):
     def delete_kakao_tokens(self, chat_id: int) -> None:
         """Remove the Kakao link of a chat ID."""
         self.redis.delete(f"kakao_tokens:{chat_id}")
+
+    # ==================== Card Info (automatic payment) ====================
+
+    CARD_INFO_TTL_SECONDS = 60 * 60  # the conversation step takes minutes, not hours
+
+    def get_card_info(self, chat_id: int) -> Optional[CardInfo]:
+        """Get the card registered for automatic payment during the current conversation."""
+        data = self.redis.get(f"card_info:{chat_id}")
+        if not data:
+            return None
+        try:
+            return CardInfo.from_dict(json.loads(data))
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError) as e:
+            logger.error(f"Failed to deserialize card info: {e}")
+            return None
+
+    def save_card_info(self, chat_id: int, card: CardInfo) -> None:
+        """Save card info with a short TTL (it is handed to the background process on start)."""
+        self.redis.setex(f"card_info:{chat_id}", self.CARD_INFO_TTL_SECONDS, json.dumps(card.to_dict()))
+
+    def delete_card_info(self, chat_id: int) -> None:
+        """Forget the card info."""
+        self.redis.delete(f"card_info:{chat_id}")
 
     # ==================== Serialization Helpers ====================
 

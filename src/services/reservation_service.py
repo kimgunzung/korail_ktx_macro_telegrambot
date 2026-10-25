@@ -1,4 +1,5 @@
 """Reservation orchestration service."""
+import json
 import os
 import signal
 import subprocess
@@ -6,7 +7,7 @@ import sys
 from typing import Optional
 
 from config.settings import settings
-from models import TrainSearchParams, RunningReservation, UserSession
+from models import TrainSearchParams, RunningReservation, UserSession, CardInfo
 from storage.base import StorageInterface
 from services.korail_service import KorailService
 from services.telegram_service import TelegramService, MessageTemplates
@@ -21,6 +22,8 @@ SRC_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # Environment variable used to hand the Korail password to the background process so it
 # never shows up in ``ps`` output as a command-line argument.
 PASSWORD_ENV_VAR = "KORAIL_BOT_PASSWORD"
+# Card for automatic payment, JSON (see models.CardInfo). Same reasoning: env, not argv.
+CARD_ENV_VAR = "KORAIL_BOT_CARD"
 
 
 class ReservationService:
@@ -68,7 +71,8 @@ class ReservationService:
         chat_id: int,
         username: str,
         password: str,
-        search_params: TrainSearchParams
+        search_params: TrainSearchParams,
+        card: Optional[CardInfo] = None
     ) -> bool:
         """
         Start a background reservation process.
@@ -78,6 +82,7 @@ class ReservationService:
             username: Korail username
             password: Korail password
             search_params: Train search parameters
+            card: Card for automatic payment after a successful reservation (optional)
 
         Returns:
             True if process started successfully
@@ -118,6 +123,9 @@ class ReservationService:
 
             env = os.environ.copy()
             env[PASSWORD_ENV_VAR] = password
+            env.pop(CARD_ENV_VAR, None)
+            if card is not None:
+                env[CARD_ENV_VAR] = json.dumps(card.to_dict())
             env["PYTHONPATH"] = SRC_DIR + (os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
 
             # Start background process with the same interpreter that runs the web app
@@ -125,7 +133,8 @@ class ReservationService:
             proc = subprocess.Popen(cmd, cwd=SRC_DIR, env=env)
 
             logger.info(
-                f"Started reservation process for chat_id={chat_id}, pid={proc.pid}"
+                f"Started reservation process for chat_id={chat_id}, pid={proc.pid}, "
+                f"auto_payment={'on (' + card.masked + ')' if card else 'off'}"
             )
 
             # Save running reservation
@@ -225,11 +234,13 @@ class ReservationService:
             self._notify_subscribers_end(korail_id)
 
     def _clear_partial_state(self, chat_id: int) -> None:
-        """Drop per-seat state of the random seating flow."""
+        """Drop per-seat state of the random seating flow and any pending card info."""
         if hasattr(self.storage, "delete_partial_reservations"):
             self.storage.delete_partial_reservations(chat_id)
         if hasattr(self.storage, "set_current_seat_index"):
             self.storage.set_current_seat_index(chat_id, None)
+        if hasattr(self.storage, "delete_card_info"):
+            self.storage.delete_card_info(chat_id)
 
     def cancel_all_reservations(self, admin_chat_id: int) -> int:
         """

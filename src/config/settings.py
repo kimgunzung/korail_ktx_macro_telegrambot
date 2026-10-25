@@ -30,6 +30,9 @@ class Settings:
     # User Access Control
     ALLOW_LIST: list[str] = os.environ.get('ALLOW_LIST', '').split(',') if os.environ.get('ALLOW_LIST') else []
 
+    # Automatic card payment right after a reservation succeeds (users opt in per reservation).
+    AUTO_PAYMENT_ENABLED: bool = os.environ.get('AUTO_PAYMENT_ENABLED', 'True').lower() in ('true', '1', 'yes')
+
     # Payment Reminder Configuration
     PAYMENT_TIMEOUT_MINUTES: int = int(os.environ.get('PAYMENT_TIMEOUT_MINUTES', '10'))
     PAYMENT_REMINDER_INTERVAL_SECONDS: int = int(os.environ.get('PAYMENT_REMINDER_INTERVAL', '10'))

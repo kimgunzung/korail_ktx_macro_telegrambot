@@ -30,6 +30,9 @@ class NotificationService:
     def send_to_multiple(self, chat_ids: list[int], text: str) -> int:
         return self.telegram.send_to_multiple(chat_ids, text)
 
+    def delete_message(self, chat_id: int, message_id: int) -> bool:
+        return self.telegram.delete_message(chat_id, message_id)
+
     def send_notification(self, chat_id: int, text: str) -> bool:
         sent = self.telegram.send_message(chat_id, text)
         self.mirror_to_kakao(chat_id, text)

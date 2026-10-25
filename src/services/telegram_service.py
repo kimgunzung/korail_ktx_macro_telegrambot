@@ -84,6 +84,27 @@ class TelegramService:
         """
         return self.send_message(chat_id, text)
 
+    def delete_message(self, chat_id: int, message_id: int) -> bool:
+        """
+        Delete a message from a chat (used to scrub card details the user typed).
+
+        Bots may delete any message in a private chat within 48 hours.
+
+        Returns:
+            True if Telegram confirmed the deletion
+        """
+        try:
+            response = self.session.post(
+                f"{self.base_url}/deleteMessage",
+                json={"chat_id": chat_id, "message_id": message_id},
+                timeout=self.REQUEST_TIMEOUT_SECONDS,
+            )
+            response.raise_for_status()
+            return bool(response.json().get("ok", False))
+        except Exception as e:
+            logger.warning(f"Failed to delete message {message_id} in chat_id={chat_id}: {e}")
+            return False
+
     def send_to_multiple(self, chat_ids: list[int], text: str) -> int:
         """
         Send a message to multiple chats.

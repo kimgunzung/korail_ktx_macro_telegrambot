@@ -16,6 +16,7 @@ from datetime import datetime
 from typing import Optional, List
 
 from pykorail import Korail, TrainType, ReserveOption, AdultPassenger
+from pykorail.models.card import Card
 from pykorail.device import profile_by_id, random_profile
 from pykorail.exceptions import (
     AccessRestrictedError,
@@ -31,12 +32,14 @@ from pykorail.exceptions import (
 )
 
 from config.settings import settings
+from models import CardInfo
 from utils.logger import get_logger
 
 logger = get_logger(__name__)
 
 __all__ = [
     "KorailService",
+    "PaymentError",
     "DuplicateReservationError",
     "KorailAccessRestrictedError",
     "TrainType",
@@ -46,6 +49,10 @@ __all__ = [
 
 class DuplicateReservationError(Exception):
     """Raised when attempting to reserve a train that's already reserved."""
+
+
+class PaymentError(Exception):
+    """Automatic card payment was refused or could not be completed. ``str(e)`` is user text."""
 
 
 class KorailAccessRestrictedError(Exception):
@@ -644,6 +651,81 @@ class KorailService:
             time.sleep(self._search_interval)
 
         return MultiReservationResult(reservations, target_count) if reservations else None
+
+    # ---------------------------------------------------------------- payment
+
+    def pay_reservation(self, reservation, card: CardInfo) -> int:
+        """
+        Pay a reservation with a credit card, turning it into a ticket.
+
+        Args:
+            reservation: pykorail Reservation (``MultiReservationResult`` is unwrapped
+                by the caller, one reservation at a time)
+            card: card details collected in the conversation
+
+        Returns:
+            The amount charged (won)
+
+        Raises:
+            PaymentError: Korail refused the payment, or it could not be attempted
+            KorailAccessRestrictedError: Korail blocked this client
+        """
+        if not self._korail_instance:
+            raise PaymentError("로그인되지 않은 상태입니다")
+        if getattr(reservation, "is_waiting", False):
+            raise PaymentError("예약대기 건은 좌석이 배정된 뒤에만 결제할 수 있습니다")
+
+        try:
+            pykorail_card = Card(
+                number=card.number,
+                password=card.password,
+                verify_number=card.verify_number,
+                expire=card.expire,
+                installment=card.installment,
+                is_corporate=card.is_corporate,
+            )
+        except ValueError as e:
+            raise PaymentError(f"카드 정보가 올바르지 않습니다: {e}") from e
+
+        logger.info(f"💳 Paying reservation {getattr(reservation, 'rsv_id', '?')} with card {card.masked}")
+        for attempt in (1, 2):
+            try:
+                if not self._logged_in and not self._relogin():
+                    raise PaymentError("코레일 세션이 만료되어 재로그인에 실패했습니다")
+                target = reservation
+                if getattr(reservation, "wct_no", None) is None:
+                    # pay() needs the ticket-window number; a fresh lookup carries it.
+                    found = self._korail_instance.reservations.find(reservation.rsv_id)
+                    if found is None:
+                        raise PaymentError("결제할 예약을 코레일에서 찾을 수 없습니다 (이미 취소되었을 수 있음)")
+                    target = found
+                self._korail_instance.reservations.pay(target, pykorail_card)
+                price = int(getattr(target, "price", 0) or 0)
+                logger.info(f"✅ Payment succeeded: {price}원 for reservation {getattr(target, 'rsv_id', '?')}")
+                return price
+            except NeedToLoginError as e:
+                if attempt == 2:
+                    raise PaymentError(f"코레일 세션 만료: {e}") from e
+                logger.debug(f"🔒 Session expired during payment, re-logging in: {e}")
+                self._logged_in = False
+                self._relogin()
+            except AccessRestrictedError as e:
+                raise KorailAccessRestrictedError(str(e)) from e
+            except HttpStatusError as e:
+                if getattr(e, "status_code", None) == 403:
+                    raise KorailAccessRestrictedError(str(e)) from e
+                raise PaymentError(f"코레일 서버 오류: {e}") from e
+            except KorailError as e:
+                code = getattr(e, "code", None)
+                raise PaymentError(f"{e}" + (f" ({code})" if code else "")) from e
+            except TransportError as e:
+                raise PaymentError(f"네트워크 오류: {e}") from e
+            except PaymentError:
+                raise
+            except Exception as e:
+                logger.error(f"❌ Unexpected payment error: {type(e).__name__}: {e}", exc_info=True)
+                raise PaymentError(f"{type(e).__name__}: {e}") from e
+        raise PaymentError("결제를 완료하지 못했습니다")  # pragma: no cover - loop always returns/raises
 
     def _cancel_reservations(self, reservations: List) -> None:
         """Cancel a list of reservations (cleanup for failed random allocation)."""

@@ -117,9 +117,14 @@ class TestFullReservationFlow:
         self.conversation_handler.handle_message(chat_id, "1")
         session = self.storage.get_user_session(chat_id)
         assert session.train_info['passengerCount'] == 1
-        assert session.last_action == UserProgress.SEAT_STRATEGY_INPUT_SUCCESS
+        assert session.last_action == UserProgress.CARD_CHOICE_PENDING
         # Single passenger auto-sets consecutive
         assert session.train_info['seatStrategy'] == 'consecutive'
+
+        # Step 12-1: Decline automatic card payment
+        self.conversation_handler.handle_message(chat_id, "N")
+        session = self.storage.get_user_session(chat_id)
+        assert session.last_action == UserProgress.SEAT_STRATEGY_INPUT_SUCCESS
 
         # Step 13: Final confirmation (Y)
         self.conversation_handler.handle_message(chat_id, "Y")
@@ -170,6 +175,11 @@ class TestFullReservationFlow:
         self.conversation_handler.handle_message(chat_id, "1")
         session = self.storage.get_user_session(chat_id)
         assert session.train_info['seatStrategy'] == 'consecutive'
+        assert session.last_action == UserProgress.CARD_CHOICE_PENDING
+
+        # Decline automatic payment
+        self.conversation_handler.handle_message(chat_id, "N")
+        session = self.storage.get_user_session(chat_id)
         assert session.last_action == UserProgress.SEAT_STRATEGY_INPUT_SUCCESS
 
         # Final confirmation
@@ -214,6 +224,19 @@ class TestFullReservationFlow:
         self.conversation_handler.handle_message(chat_id, "2")
         session = self.storage.get_user_session(chat_id)
         assert session.train_info['seatStrategy'] == 'random'
+        assert session.last_action == UserProgress.CARD_CHOICE_PENDING
+
+        # Opt in to automatic card payment and enter the card
+        self.telegram.delete_message.return_value = True
+        self.conversation_handler.handle_message(chat_id, "Y")
+        self.conversation_handler.handle_message(chat_id, "4111-1111-1111-1111", message_id=1)
+        self.conversation_handler.handle_message(chat_id, "12/35", message_id=2)
+        self.conversation_handler.handle_message(chat_id, "12", message_id=3)
+        self.conversation_handler.handle_message(chat_id, "900101", message_id=4)
+        session = self.storage.get_user_session(chat_id)
+        assert session.last_action == UserProgress.SEAT_STRATEGY_INPUT_SUCCESS
+        assert session.train_info['cardMask'] == "****1111"
+        assert self.telegram.delete_message.call_count == 4
 
         # Final confirmation
         self.conversation_handler.handle_message(chat_id, "Y")
@@ -222,6 +245,10 @@ class TestFullReservationFlow:
         call_args = self.reservation.start_reservation_process.call_args
         assert call_args[1]['search_params'].passenger_count == 5
         assert call_args[1]['search_params'].seat_strategy == 'random'
+        card = call_args[1]['card']
+        assert card.number == "4111111111111111" and card.expire == "3512"
+        # the card is gone from Redis once the background process owns it
+        assert self.storage.get_card_info(chat_id) is None
 
     @patch('services.korail_service.KorailService.login')
     def test_flow_with_cancellation_mid_way(self, mock_login):

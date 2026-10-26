@@ -1,17 +1,18 @@
 """Data models for the application."""
-from models.user import UserCredentials, UserSession, UserProgress
+from models.user import KorailCredentials, KakaoTokens, CardInfo
 from models.reservation import (
-    TrainSearchParams, RunningReservation, PaymentStatus,
+    TrainSearchParams, RunningReservation, PaymentStatus, ReservationResult,
     ReservationPaymentStatus, SingleReservationInfo, MultiReservationStatus
 )
 
 __all__ = [
-    'UserCredentials',
-    'UserSession',
-    'UserProgress',
+    'KorailCredentials',
+    'KakaoTokens',
+    'CardInfo',
     'TrainSearchParams',
     'RunningReservation',
     'PaymentStatus',
+    'ReservationResult',
     'ReservationPaymentStatus',
     'SingleReservationInfo',
     'MultiReservationStatus',

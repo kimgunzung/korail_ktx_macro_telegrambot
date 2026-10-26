@@ -57,9 +57,12 @@ def status_lines(storage, reservation_service, kakao, user_id: int = settings.LO
     lines.append("")
     lines.append(f"👤 계정: {credentials.korail_id if credentials else '없음 (korailbot login)'}")
     lines.append(f"💳 카드: {card.masked if card and card.is_complete else '없음 (korailbot card set)'}")
+    if settings.telegram_enabled():
+        paired = storage.get_paired_users()
+        lines.append(f"📣 텔레그램: {'등록된 채팅 ' + str(len(paired)) + '개' if paired else '등록된 채팅 없음 (korailbot pair)'}")
+    else:
+        lines.append("📣 텔레그램: 토큰 미설정 (TELEGRAM_BOT_TOKEN)")
     if kakao.enabled:
         linked = kakao.link_summary(user_id)
-        lines.append(f"📣 카카오톡 알림: {'연동됨 (' + linked + ')' if linked else ('미연동 (\"연동\" 입력)' if for_chat else '미연동 (korailbot kakao link)')}")
-    else:
-        lines.append("📣 카카오톡 알림: 서버 미설정 (KAKAO_REST_API_KEY)")
+        lines.append(f"📣 카카오톡 알림: {'연동됨 (' + linked + ')' if linked else '미연동 (korailbot kakao link)'}")
     return lines

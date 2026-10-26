@@ -1,22 +1,20 @@
-"""KakaoTalk chatbot logic: commands and the reservation wizard.
+"""Chatbot logic: commands and the step-by-step reservation wizard.
 
-The Open Builder skill server (``server.py``) turns every utterance into
-``KakaoBot.handle(bot_user_key, text)`` and returns the SkillResponse. State for the
-step-by-step reservation wizard lives in Redis (``chat_state``), keyed by the Open
-Builder user id, so any number of server workers/restarts keep the conversation.
+Transport-neutral: the Telegram runner turns every incoming message into
+``ChatBot.handle(chat_key, text)`` and renders the returned ``Reply``. Wizard state
+lives in Redis (``chat_state``) keyed by the chat id, so restarts keep the conversation.
 
-Security model: only *paired* users may control the bot. Pairing is done once by
-sending ``등록 <코드>`` where the code comes from ``korailbot kakao pair`` on the
-machine that runs the bot (or by listing the user id in ``KAKAO_SKILL_ALLOWED_USERS``).
-Credentials and card numbers are never entered through KakaoTalk (chat history is
-stored on Kakao's servers); the CLI handles those.
+Security model: only *paired* chats may control the bot. Pairing is done once by
+sending ``등록 <코드>`` where the code comes from ``korailbot pair`` on the machine
+that runs the bot (or by listing the chat id in ``TELEGRAM_ALLOWED_CHAT_IDS``).
+Credentials and card numbers are never entered through chat; the CLI handles those.
 """
 import secrets
 from datetime import datetime
 from typing import List, Optional, Tuple
 
 from config.settings import settings
-from kakao_skill.responses import text_response
+from chatbot.responses import Reply, text_response
 from models import TrainSearchParams
 from utils.logger import get_logger
 from utils.validators import InputValidator
@@ -34,7 +32,6 @@ HELP_TEXT = """🚄 코레일 예매 봇 명령어
 • 취소 — 진행 중인 검색 중단
 • 결제완료 — 직접 결제 후 알림 중단 (랜덤 배치는 다음 좌석 진행)
 • 카드 — 저장된 자동 결제 카드 확인
-• 연동 — 예약 알림을 이 카카오 계정의 '나와의 채팅'으로 받기
 • 처음부터 — 입력 중인 예약 조건 초기화
 • 도움말 — 이 안내
 
@@ -71,7 +68,7 @@ def _is(text: str, *words: str) -> bool:
     return any(n == _normalize(w) for w in words)
 
 
-class KakaoBot:
+class ChatBot:
     """Stateless entry point; conversation state is read/written through ``storage``."""
 
     def __init__(self, storage, reservation_service, kakao, notifier=None):
@@ -81,8 +78,8 @@ class KakaoBot:
 
     # ------------------------------------------------------------ dispatch
 
-    def handle(self, bot_user_key: Optional[str], text: str) -> dict:
-        """Return the SkillResponse for an utterance."""
+    def handle(self, bot_user_key: Optional[str], text: str) -> Reply:
+        """Return the reply for an incoming message from chat ``bot_user_key``."""
         if not bot_user_key:
             return text_response("요청에 사용자 정보가 없습니다.")
         text = (text or "").strip()
@@ -97,7 +94,7 @@ class KakaoBot:
     # ------------------------------------------------------------- pairing
 
     def _is_paired(self, key: str) -> bool:
-        return key in settings.KAKAO_SKILL_ALLOWED_USERS or key in self.storage.get_paired_users()
+        return key in settings.TELEGRAM_ALLOWED_CHAT_IDS or key in self.storage.get_paired_users()
 
     def _handle_unpaired(self, key: str, text: str) -> dict:
         parts = text.split()
@@ -109,9 +106,9 @@ class KakaoBot:
                 logger.info(f"Chatbot user paired: {key[:6]}…")
                 return text_response("✅ 등록되었습니다! 이제 이 채팅으로 예약을 조작할 수 있습니다.\n\n" + HELP_TEXT, MAIN_REPLIES)
             logger.warning(f"Chatbot pairing failed from {key[:6]}…")
-            return text_response("❌ 등록 코드가 올바르지 않거나 만료되었습니다. 서버에서 `korailbot kakao pair` 로 새 코드를 만든 뒤 다시 보내주세요.")
+            return text_response("❌ 등록 코드가 올바르지 않거나 만료되었습니다. 서버에서 `korailbot pair` 로 새 코드를 만든 뒤 다시 보내주세요.")
         return text_response(
-            "🔒 등록되지 않은 사용자입니다.\n\n봇을 실행하는 컴퓨터에서 `korailbot kakao pair` 를 실행해 나온 코드를 "
+            "🔒 등록되지 않은 사용자입니다.\n\n봇을 실행하는 컴퓨터에서 `korailbot pair` 를 실행해 나온 코드를 "
             "'등록 123456' 형식으로 보내주세요. (10분 안에)"
         )
 
@@ -134,12 +131,6 @@ class KakaoBot:
             return self._paid()
         if _is(text, "카드", "card"):
             return self._card()
-        if _is(text, "연동", "link", "알림연동", "카카오연동"):
-            return self._link(key)
-        if _is(text, "연동해제", "unlink"):
-            return self._unlink()
-        if text.startswith(("코드 ", "code ")):
-            return self._link_code(text.split(None, 1)[1])
 
         first = text.split()[0] if text.split() else ""
         if _is(first, "예약", "reserve", "검색"):
@@ -181,41 +172,6 @@ class KakaoBot:
             f"유효기간: {card.expire_display}\n저장일: {saved_at}\n\n교체/삭제는 서버에서 `korailbot card set` / `card delete`",
             MAIN_REPLIES,
         )
-
-    # ------------------------------------------------------------- linking
-
-    def _link(self, key: str) -> dict:
-        if not self.kakao.enabled:
-            return text_response("⚠️ 서버에 카카오 알림(KAKAO_REST_API_KEY)이 설정되어 있지 않습니다.", MAIN_REPLIES)
-        linked = self.kakao.link_summary(USER_ID)
-        if linked:
-            return text_response(f"✅ 이미 알림이 연동되어 있습니다. (연동일 {linked})\n해제하려면 '연동해제'를 보내세요.", MAIN_REPLIES)
-        url = self.kakao.get_authorize_url(USER_ID)
-        hint = ""
-        if not settings.KAKAO_REDIRECT_URI.startswith(("https://", "http://localhost", "http://127.0.0.1")) or \
-                "localhost" in settings.KAKAO_REDIRECT_URI or "127.0.0.1" in settings.KAKAO_REDIRECT_URI:
-            hint = ("\n\n⚠️ 서버의 Redirect URI가 localhost 로 설정되어 있어 휴대폰에서는 마지막 페이지가 열리지 않습니다. "
-                    "그래도 주소창의 code= 뒤 값을 복사해 '코드 <값>' 으로 보내면 연동됩니다. "
-                    "(서버 .env 의 KAKAO_REDIRECT_URI 를 https://<공개주소>/kakao/oauth 로 바꾸면 자동 완료)")
-        return text_response(
-            "💬 아래 링크를 열어 카카오 로그인 후 '카카오톡 메시지 전송' 권한에 동의하면 예약 알림이 '나와의 채팅'으로 옵니다.\n\n"
-            + url + hint,
-            ["상태", "도움말"],
-        )
-
-    def _link_code(self, code: str) -> dict:
-        from services.kakao_service import KakaoError
-        try:
-            self.kakao.exchange_code(USER_ID, code.strip())
-            self.kakao.send_memo(USER_ID, "🚄 코레일 예매 봇 알림 연동이 완료되었습니다.")
-        except KakaoError as e:
-            return text_response(f"❌ 연동 실패: {e}\n'연동'을 보내 다시 시도하세요.", MAIN_REPLIES)
-        return text_response("✅ 알림 연동 완료! '나와의 채팅'에 확인 메시지를 보냈습니다.", MAIN_REPLIES)
-
-    def _unlink(self) -> dict:
-        if not self.kakao.enabled:
-            return text_response("⚠️ 서버에 카카오 알림이 설정되어 있지 않습니다.", MAIN_REPLIES)
-        return text_response("✅ 알림 연동을 해제했습니다." if self.kakao.unlink(USER_ID) else "ℹ️ 연동되어 있지 않습니다.", MAIN_REPLIES)
 
     # -------------------------------------------------------------- wizard
 
@@ -391,8 +347,7 @@ class KakaoBot:
         ok, error = self._apply(state, step, text)
         if not ok:
             prompt = self._prompt(state)
-            prompt["template"]["outputs"].insert(0, {"simpleText": {"text": f"❌ {error}"}})
-            prompt["template"]["outputs"] = prompt["template"]["outputs"][:3]
+            prompt.prefix_lines.insert(0, f"❌ {error}")
             return prompt
         state["step"] = self._next_step(state)
         self.storage.save_chat_state(key, state)
@@ -416,8 +371,7 @@ class KakaoBot:
             logger.error(f"Failed to start worker from chatbot: {e}", exc_info=True)
             return text_response(f"❌ 예약 검색을 시작하지 못했습니다: {e}", MAIN_REPLIES)
         self.storage.save_chat_state(key, None)
-        notice = ("예약 결과는 '나와의 채팅'으로 알려드립니다." if self.kakao.enabled and self.kakao.is_linked(USER_ID)
-                  else "알림 연동이 없어 결과는 '상태'로 확인해야 합니다. '연동'을 보내면 카카오톡으로 알림을 받을 수 있습니다.")
+        notice = "예약 결과는 이 채팅으로 알려드립니다."
         return text_response(
             f"🎯 예약 검색을 시작했습니다! ({params.src_locate}→{params.dst_locate} {params.dep_date} {params.dep_time[:4]}~{params.max_dep_time})\n"
             f"{notice}" + ("" if card else f"\n예약 성공 후 {settings.PAYMENT_TIMEOUT_MINUTES}분 안에 결제하고 '결제완료'를 보내주세요."),

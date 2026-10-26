@@ -10,7 +10,8 @@
 | Redis | CLI와 백그라운드 워커가 상태를 공유하는 저장소. Ubuntu는 패키지, Windows는 WSL2/Docker/Memurai |
 | 코레일 계정 | 휴대폰 번호(`010-1234-5678`), 이메일 또는 회원번호 + 비밀번호 |
 | 가정용 인터넷 회선 | 코레일은 데이터센터·VPN IP를 차단(`-8202`)합니다. 클라우드 서버에서는 동작하지 않습니다 |
-| (선택) 카카오 개발자 앱 | 카카오톡 알림을 받으려면 필요 (3단계) |
+| 텔레그램 봇 토큰 | 텔레그램에서 조작·알림 (B절, @BotFather 에서 1분) |
+| (선택) 카카오 개발자 앱 | 카카오톡으로도 알림을 받으려면 (3단계) |
 
 실행 구조: `korailbot start` 는 조건을 확인하고 **백그라운드 워커**를 띄운 뒤 끝납니다. 워커가 조회·예약·결제·알림을 담당하며 터미널을 닫아도 계속 실행됩니다. 로그는 `~/.korail_bot/logs/` 에 남습니다.
 
@@ -155,7 +156,7 @@ Windows 방화벽 알림이 뜨면(카카오 연동 시 로컬 포트) "개인 �
 
 ## 3. 카카오톡 알림 연동 (선택, 두 OS 공통)
 
-예약 성공/실패와 결제 리마인더를 카카오톡 "나와의 채팅"으로 받습니다. 연동하지 않으면 결과는 `korailbot status` / `korailbot logs` 로만 확인합니다.
+텔레그램(B절) 대신, 또는 함께, 카카오톡 "나와의 채팅"으로도 알림을 받을 수 있습니다. 텔레그램을 쓴다면 이 절은 건너뛰어도 됩니다.
 
 1. [Kakao Developers](https://developers.kakao.com) → **내 애플리케이션** → 앱 추가. **앱 키 > REST API 키**를 복사합니다.
 2. **카카오 로그인** 메뉴에서 활성화 ON, **Redirect URI** 에 `http://localhost:8080/kakao/oauth` 등록.
@@ -175,29 +176,36 @@ Windows 방화벽 알림이 뜨면(카카오 연동 시 로컬 포트) "개인 �
 
 ---
 
-## B. 카카오톡 챗봇: 카카오톡에서 예약 조작 (선택)
+## B. 텔레그램 봇: 휴대폰에서 예약 조작과 알림 (권장)
 
-3단계까지 마치면 알림은 카카오톡으로 오지만 명령은 터미널에서 내려야 합니다. 카카오톡 채널 챗봇을 붙이면 휴대폰에서 `예약`, `상태`, `취소`, `결제완료` 를 보낼 수 있습니다. 필요한 것은 **카카오톡 채널 + 오픈빌더 봇 + 공개 HTTPS 주소** 입니다. 고정 IP는 필수가 아니지만 도메인과 유효한 인증서는 필수입니다(자체 서명 인증서는 거부됨).
+텔레그램 봇은 **롱 폴링** 방식이라 공개 서버, 도메인, 인증서, 포트 개방이 필요 없습니다. 집 PC(우분투/Windows)에서 그대로 동작합니다.
 
-### B-1. 스킬 서버 실행
+### B-1. 봇 토큰 만들기
+
+1. 텔레그램 앱에서 `@BotFather` 검색 → `/newbot` → 봇 이름과 `..._bot` 으로 끝나는 아이디 입력.
+2. 발급된 토큰(`123456789:AAE...` 형태)을 `.env` 에 넣습니다.
+   ```bash
+   echo "TELEGRAM_BOT_TOKEN=발급받은_토큰" >> .env
+   ```
+   토큰은 비밀입니다. 채팅이나 공개 저장소에 올리지 마세요.
+
+### B-2. 봇 실행
 
 ```bash
-echo "KAKAO_SKILL_SECRET=$(openssl rand -hex 16)" >> .env    # 스킬 URL 비밀 경로
-korailbot serve                                               # 127.0.0.1:8090 에서 대기
+korailbot telegram
 ```
-
-systemd 로 상시 실행 (Ubuntu):
+"봇: @이름 — 텔레그램에서 이 봇에게 메시지를 보내세요." 가 나오면 정상입니다. 상시 실행은 systemd 로:
 
 ```bash
-sudo tee /etc/systemd/system/korailbot-skill.service > /dev/null <<UNIT
+sudo tee /etc/systemd/system/korailbot-telegram.service > /dev/null <<UNIT
 [Unit]
-Description=korailbot KakaoTalk skill server
+Description=korailbot Telegram bot
 After=network-online.target redis-server.service
 
 [Service]
 User=$USER
 WorkingDirectory=$HOME/korail_ktx_macro_telegrambot
-ExecStart=$HOME/korail_ktx_macro_telegrambot/.venv/bin/python src/cli.py serve
+ExecStart=$HOME/korail_ktx_macro_telegrambot/.venv/bin/python src/cli.py telegram
 Restart=always
 RestartSec=5
 
@@ -205,63 +213,32 @@ RestartSec=5
 WantedBy=multi-user.target
 UNIT
 sudo systemctl daemon-reload
-sudo systemctl enable --now korailbot-skill
-curl http://127.0.0.1:8090/healthz        # {"ok":true}
+sudo systemctl enable --now korailbot-telegram
+systemctl status korailbot-telegram --no-pager
 ```
 
-### B-2. 공개 HTTPS 주소 (둘 중 하나)
+Windows 에서는 작업 스케줄러에 "로그온 시" 트리거로 `.venv\Scripts\python.exe src\cli.py telegram` 을 등록합니다.
 
-**Caddy + 도메인** (공유기에서 80/443 포트를 이 PC로 포워딩, DuckDNS 등 무료 DDNS 가능)
+### B-3. 내 채팅 등록
 
 ```bash
-sudo apt install -y caddy
-sudo tee /etc/caddy/Caddyfile > /dev/null <<'CADDY'
-bot.example.com {
-    reverse_proxy /kakao/* 127.0.0.1:8090
-    reverse_proxy /healthz 127.0.0.1:8090
-}
-CADDY
-sudo systemctl reload caddy
-curl https://bot.example.com/healthz
-```
-Caddy 가 Let's Encrypt 인증서를 자동으로 발급·갱신합니다.
-
-**Cloudflare Tunnel** (포트 개방·고정 IP 불필요, 도메인을 Cloudflare 에 등록)
-
-```bash
-cloudflared tunnel login
-cloudflared tunnel create korailbot
-cloudflared tunnel route dns korailbot bot.example.com
-cloudflared tunnel run --url http://127.0.0.1:8090 korailbot
+korailbot pair          # 10분 유효한 1회용 6자리 코드 출력
 ```
 
-### B-3. 카카오톡 채널과 오픈빌더 봇
+텔레그램에서 봇을 찾아 `/start` 를 누른 뒤 `등록 123456` 을 보냅니다. "등록되었습니다" 가 오면 그 채팅만 봇을 조작하고 알림을 받습니다. 다른 기기/가족 채팅도 같은 방법으로 추가할 수 있고, `korailbot unpair` 로 전부 해제합니다.
 
-1. **채널 개설**: https://center-pf.kakao.com → 새 채널 만들기. 개인도 가능하며 비즈니스 인증은 필요 없습니다. 본인만 쓸 것이므로 검색 허용은 꺼도 됩니다.
-2. **봇 만들기**: https://chatbot.kakao.com (카카오 i 오픈빌더) → 봇 만들기 → "카카오톡 챗봇". 계정에 따라 오픈빌더 사용 신청 후 승인 메일을 기다려야 할 수 있습니다.
-3. **채널 연결**: 봇 → 설정 → 카카오톡 채널 연결에서 1번 채널 선택. 개인 계정으로 막히면 챗봇 관리자센터 고객센터에 개인 사용 가능 여부를 문의하세요.
-4. **스킬 등록**: 봇 → 스킬 → 생성 → URL 에 `https://bot.example.com/kakao/skill/<KAKAO_SKILL_SECRET>` 입력 → 저장 → "스킬 테스트" 로 응답 확인(등록 안내 메시지가 오면 정상).
-5. **폴백 블록 연결**: 시나리오 → 폴백 블록 → 봇 응답에서 **스킬데이터 사용** 선택, 4번 스킬 지정 → 저장. (웰컴 블록에도 같은 스킬을 걸면 채널 추가 시 안내가 나갑니다.)
-6. **배포**: 우측 상단 **배포**.
-
-### B-4. 본인 등록과 사용
-
-```bash
-korailbot kakao pair          # 10분 유효한 6자리 코드 출력
-```
-
-카카오톡에서 내 채널을 친구 추가하고 `등록 123456` 을 보냅니다. "등록되었습니다"가 오면 그 카카오 사용자만 봇을 조작할 수 있습니다. 이후:
+### B-4. 사용
 
 ```
 예약                               → 출발일부터 하나씩 물어봄 (버튼으로 선택 가능)
 예약 20261225 서울 부산 0900 1200    → 한 줄로 시작
-상태 / 취소 / 결제완료 / 카드 / 도움말
-연동                               → 예약 알림을 '나와의 채팅'으로 받기 (링크 클릭)
+상태 / 취소 / 결제완료 / 카드 / 처음부터 / 도움말
+/status /cancel /paid /card /reset /help 도 같은 뜻
 ```
 
-`연동` 링크가 휴대폰에서 바로 완료되게 하려면 `.env` 의 `KAKAO_REDIRECT_URI=https://bot.example.com/kakao/oauth` 로 바꾸고 Kakao Developers 의 Redirect URI 에도 같은 주소를 추가한 뒤 `korailbot-skill` 을 재시작하세요. 그대로 두면 리다이렉트가 `localhost` 라 페이지는 열리지 않지만, 주소창의 `code=` 값을 `코드 <값>` 으로 보내면 연동됩니다.
+예약 성공·실패, 결제 리마인더, 오류가 이 채팅으로 옵니다. 직접 결제한 뒤에는 `결제완료` 를 보내세요.
 
-> 보안상 코레일 비밀번호와 카드 정보는 카카오톡으로 받지 않습니다. `korailbot login`, `korailbot card set` 은 서버에서 실행하세요. 스킬 URL 은 비밀 경로를 포함하고, 등록되지 않은 사용자의 메시지는 모두 거부됩니다.
+> 보안상 코레일 비밀번호와 카드 정보는 채팅으로 받지 않습니다. `korailbot login`, `korailbot card set` 은 서버에서 실행하세요. 등록되지 않은 채팅의 메시지는 모두 거부됩니다.
 
 ---
 
@@ -332,8 +309,9 @@ Docker와 `testcontainers` 가 있으면 테스트용 Redis 컨테이너를 자�
 | `start` 후 아무 알림이 없음 | 매진이면 자리가 날 때까지 조회만 계속합니다. `korailbot logs -f` 로 조회 로그 확인, `korailbot status` 로 워커 생존 확인 |
 | 카카오 `kakao link` 가 응답을 못 받음 | Redirect URI가 `http://localhost:8080/kakao/oauth` 로 정확히 등록됐는지, 8080 포트를 다른 프로그램이 쓰고 있지 않은지(`KAKAO_LOCAL_PORT` 변경) 확인. 수동으로 `--code` 전달 가능 |
 | 카카오 `insufficient scopes (-402)` | 동의항목에서 `talk_message` 가 꺼져 있음. 켠 뒤 `korailbot kakao unlink` → `kakao link` 재연동 |
-| 챗봇이 "등록되지 않은 사용자" 라고 답함 | `korailbot kakao pair` 로 코드를 만들어 `등록 <코드>` 전송. 코드는 10분 유효, 1회용 |
-| 오픈빌더 스킬 테스트 실패 / 응답 없음 | `curl https://<도메인>/healthz` 로 공개 주소 확인, `KAKAO_SKILL_SECRET` 경로 일치 확인, `systemctl status korailbot-skill`. 응답은 5초 안에 와야 하므로 Redis 와 같은 기기에서 실행 |
+| 텔레그램 봇이 "등록되지 않은 사용자" 라고 답함 | `korailbot pair` 로 코드를 만들어 `등록 <코드>` 전송. 코드는 10분 유효, 1회용 |
+| `korailbot telegram` 이 "토큰 확인 실패" | `.env` 의 `TELEGRAM_BOT_TOKEN` 오타 확인(BotFather 토큰 전체). 프록시/방화벽이 api.telegram.org 를 막는지 확인 |
+| 텔레그램에서 답이 없음 | `systemctl status korailbot-telegram` 로 봇이 떠 있는지, 봇 인스턴스가 두 개 이상 돌지 않는지(같은 토큰으로 폴링은 하나만 가능) 확인 |
 | `Cannot decrypt saved_card` / 계정 복호화 실패 | `CARD_ENCRYPTION_KEY` 가 바뀌었거나 `~/.korail_bot/secret.key` 가 삭제됨. `korailbot login`, `korailbot card set` 으로 재등록 |
 | Windows: `Activate.ps1` 실행 불가 | `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` |
 | Windows: 워커가 바로 종료 | `korailbot logs` 로 오류 확인. Redis가 `localhost:6379`에서 응답하는지 확인 |

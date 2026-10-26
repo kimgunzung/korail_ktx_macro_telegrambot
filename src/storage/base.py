@@ -75,7 +75,7 @@ class StorageInterface(ABC):
     @abstractmethod
     def delete_kakao_tokens(self, user_id: int) -> None: ...
 
-    # KakaoTalk chatbot: paired Open Builder users, pairing code, wizard state
+    # Chatbot (Telegram): paired chat ids, pairing code, wizard state
     @abstractmethod
     def get_paired_users(self) -> List[str]: ...
 

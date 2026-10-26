@@ -11,8 +11,9 @@ Commands:
   paid                직접 결제 완료를 알림 (리마인더 중단 / 다음 좌석 진행)
   logs                워커 로그 보기
   card                자동 결제 카드 확인 / 등록 / 삭제
-  kakao               카카오톡 '나에게 보내기' 연동 / 챗봇 사용자 등록(pair)
-  serve               카카오톡 챗봇(오픈빌더 스킬) 서버 실행
+  telegram            텔레그램 봇 실행 (롱 폴링, 공개 서버 불필요)
+  pair / unpair       텔레그램 채팅 등록 코드 발급 / 전체 해제
+  kakao               (선택) 카카오톡 '나에게 보내기' 알림 연동
   stations            역 이름 검색
 """
 import argparse
@@ -204,7 +205,9 @@ def cmd_start(args) -> int:
         say(line)
     say(f"👤 계정: {credentials.korail_id}")
     say(f"💳 결제: {'카드 자동 결제 (' + card.masked + ')' if card else '직접 결제 (예약 후 안내)'}")
-    say(f"📣 알림: {'카카오톡 연동됨' if kakao.enabled and kakao.is_linked(USER_ID) else '카카오톡 미연동 (로그만 기록)'}")
+    paired = storage.get_paired_users() if settings.telegram_enabled() else []
+    say(f"📣 알림: {'텔레그램 ' + str(len(paired)) + '개 채팅' if paired else '텔레그램 미등록 (korailbot pair)'}"
+        + (", 카카오톡 연동됨" if kakao.enabled and kakao.is_linked(USER_ID) else ""))
     say("━━━━━━━━━━━━━━━━━━━━")
     if not args.yes and not confirm("예약 검색을 시작할까요?"):
         say("취소했습니다.")
@@ -344,7 +347,7 @@ def cmd_kakao(args) -> int:
     from services.kakao_service import KakaoError, wait_for_oauth_redirect
 
     action = args.action
-    if action not in ("pair", "unpair") and not kakao.enabled:
+    if not kakao.enabled:
         fail("카카오톡 연동이 설정되어 있지 않습니다. .env 에 KAKAO_REST_API_KEY 를 설정하세요. (docs/INSTALL.md 참고)")
 
     if action == "status":
@@ -357,19 +360,6 @@ def cmd_kakao(args) -> int:
         say("✅ 카카오톡 연동을 해제했습니다." if kakao.unlink(USER_ID) else "ℹ️ 연동되어 있지 않습니다.")
         return 0
 
-    if action == "pair":
-        from kakao_skill.bot import create_pairing_code, PAIRING_TTL_SECONDS
-        code = create_pairing_code(storage)
-        say("💬 카카오톡 채널 챗봇에서 아래 문장을 보내면 이 봇의 사용자로 등록됩니다. "
-            f"({PAIRING_TTL_SECONDS // 60}분 안에)")
-        say(f"\n    등록 {code}\n")
-        say("등록된 사용자만 챗봇으로 예약을 조작할 수 있습니다. 해제: korailbot kakao unpair")
-        return 0
-
-    if action == "unpair":
-        from kakao_skill.bot import clear_paired_users
-        say(f"✅ 챗봇 등록 사용자 {clear_paired_users(storage)}명을 해제했습니다.")
-        return 0
 
     if action == "test":
         if not kakao.is_linked(USER_ID):
@@ -415,23 +405,41 @@ def cmd_kakao(args) -> int:
     return 0
 
 
-# ------------------------------------------------------------------ serve
+# --------------------------------------------------------------- telegram
 
-def cmd_serve(args) -> int:
-    """Run the KakaoTalk chatbot (Open Builder skill) HTTP server in the foreground."""
+def cmd_pair(args) -> int:
+    """Create a one-time pairing code for the Telegram chat."""
     storage = _storage()
-    from kakao_skill.server import serve_forever
-    host = args.host or settings.KAKAO_SKILL_HOST
-    port = args.port or settings.KAKAO_SKILL_PORT
-    say(f"🚀 카카오톡 챗봇 스킬 서버 시작: http://{host}:{port}{settings.kakao_skill_path()}")
-    say("   오픈빌더 스킬 URL에는 이 서버 앞의 공개 HTTPS 주소를 등록하세요. (docs/INSTALL.md 'B' 참고)")
-    if not storage.get_paired_users() and not settings.KAKAO_SKILL_ALLOWED_USERS:
-        say("   아직 등록된 챗봇 사용자가 없습니다: `korailbot kakao pair` 로 코드를 만들고 채널에서 '등록 <코드>'를 보내세요.")
-    say("   종료: Ctrl+C")
+    from chatbot.logic import create_pairing_code, PAIRING_TTL_SECONDS
+    code = create_pairing_code(storage)
+    say(f"💬 텔레그램에서 봇에게 아래 문장을 보내면 그 채팅이 등록됩니다. ({PAIRING_TTL_SECONDS // 60}분 안에, 1회용)")
+    say(f"\n    등록 {code}\n")
+    say("등록된 채팅만 예약을 조작하고 알림을 받습니다. 전체 해제: korailbot unpair")
+    if not settings.telegram_enabled():
+        say("⚠️ TELEGRAM_BOT_TOKEN 이 설정되어 있지 않습니다. .env 에 토큰을 넣고 `korailbot telegram` 을 실행하세요.")
+    return 0
+
+
+def cmd_unpair(args) -> int:
+    storage = _storage()
+    from chatbot.logic import clear_paired_users
+    say(f"✅ 등록된 텔레그램 채팅 {clear_paired_users(storage)}개를 해제했습니다.")
+    return 0
+
+
+def cmd_telegram(args) -> int:
+    """Run the Telegram bot (long polling) in the foreground."""
+    if not settings.telegram_enabled():
+        fail("TELEGRAM_BOT_TOKEN 이 설정되어 있지 않습니다. @BotFather 에서 토큰을 받아 .env 에 넣으세요. (docs/INSTALL.md 참고)")
+    storage = _storage()
+    from telegram_bot.runner import run_polling
+    say("🤖 텔레그램 봇 시작 (롱 폴링, 공개 서버 불필요). 종료: Ctrl+C")
+    if not storage.get_paired_users() and not settings.TELEGRAM_ALLOWED_CHAT_IDS:
+        say("   아직 등록된 채팅이 없습니다: `korailbot pair` 로 코드를 만들고 텔레그램에서 '등록 <코드>'를 보내세요.")
     try:
-        serve_forever(host, port, storage)
+        run_polling(storage)
     except KeyboardInterrupt:
-        say("\n서버를 종료했습니다.")
+        say("\n봇을 종료했습니다.")
     return 0
 
 
@@ -454,7 +462,7 @@ def cmd_stations(args) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="korailbot",
-        description="코레일 KTX 매진 열차 자동 예매 (카카오톡 알림)",
+        description="코레일 KTX 매진 열차 자동 예매 (텔레그램 봇 + 카드 자동 결제)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     sub = parser.add_subparsers(dest="command", metavar="<command>")
@@ -507,16 +515,19 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_card)
 
     p = sub.add_parser("kakao", help="카카오톡 알림 연동 관리")
-    p.add_argument("action", choices=["link", "status", "test", "unlink", "pair", "unpair"],
-                   help="link/status/test/unlink: 알림 연동, pair/unpair: 챗봇 사용자 등록")
+    p.add_argument("action", choices=["link", "status", "test", "unlink"])
     p.add_argument("--code", help="link: 브라우저 주소창의 code= 값을 직접 전달")
     p.add_argument("--no-browser", action="store_true", help="link: 브라우저를 자동으로 열지 않음")
     p.set_defaults(func=cmd_kakao)
 
-    p = sub.add_parser("serve", help="카카오톡 챗봇(오픈빌더 스킬) 서버 실행")
-    p.add_argument("--host", help=f"바인드 주소 (기본 {settings.KAKAO_SKILL_HOST})")
-    p.add_argument("--port", type=int, help=f"포트 (기본 {settings.KAKAO_SKILL_PORT})")
-    p.set_defaults(func=cmd_serve)
+    p = sub.add_parser("telegram", help="텔레그램 봇 실행 (롱 폴링, 공개 서버 불필요)")
+    p.set_defaults(func=cmd_telegram)
+
+    p = sub.add_parser("pair", help="텔레그램 채팅 등록 코드 발급")
+    p.set_defaults(func=cmd_pair)
+
+    p = sub.add_parser("unpair", help="등록된 텔레그램 채팅 전체 해제")
+    p.set_defaults(func=cmd_unpair)
 
     p = sub.add_parser("stations", help="역 이름 목록/검색")
     p.add_argument("query", nargs="?", help="검색어 (예: 광주)")

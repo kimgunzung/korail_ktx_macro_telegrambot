@@ -14,6 +14,9 @@ _TEST_DATA_DIR = tempfile.mkdtemp(prefix="korailbot-tests-")
 os.environ["KORAIL_BOT_DATA_DIR"] = _TEST_DATA_DIR
 os.environ["KORAIL_BOT_LOG_DIR"] = os.path.join(_TEST_DATA_DIR, "logs")
 os.environ.pop("KAKAO_REST_API_KEY", None)
+os.environ.pop("TELEGRAM_BOT_TOKEN", None)
+os.environ.pop("BOTTOKEN", None)
+os.environ.pop("TELEGRAM_ALLOWED_CHAT_IDS", None)
 os.environ.pop("CARD_ENCRYPTION_KEY", None)
 
 # Redis for the integration tests: a throwaway Docker container when Docker is

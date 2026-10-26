@@ -1,12 +1,12 @@
 # 코레일 KTX 자동 예매 (korailbot)
 
-매진된 KTX 열차를 자동으로 모니터링하여 좌석이 나오면 예약하고, 저장된 카드로 바로 결제까지 해 주는 **명령줄 도구**입니다.
-예약 결과와 결제 마감 알림은 카카오톡 "나와의 채팅"으로 받습니다.
+매진된 KTX 열차를 자동으로 모니터링하여 좌석이 나오면 예약하고, 저장된 카드로 바로 결제까지 해 주는 도구입니다.
+명령줄(`korailbot`)과 **텔레그램 봇**으로 조작하고, 예약 결과와 결제 마감 알림은 텔레그램으로 받습니다(카카오톡 알림은 선택).
 
 ```bash
 korailbot login                                  # 코레일 계정 저장 (암호화)
 korailbot card set                               # (선택) 자동 결제 카드 등록
-korailbot kakao link                             # (선택) 카카오톡 알림 연동
+korailbot telegram                               # 텔레그램 봇 실행 (상시) → korailbot pair 로 내 채팅 등록
 korailbot start --date 20261225 --from 서울 --to 부산 --time 0900 --until 1200
 korailbot status                                 # 진행 상황 / 마지막 결과
 korailbot cancel                                 # 검색 중단
@@ -18,8 +18,8 @@ korailbot cancel                                 # 검색 중단
 
 1. `korailbot start` 가 조건을 검증하고 **백그라운드 워커**를 띄운 뒤 바로 종료합니다. 워커는 터미널을 닫아도 계속 돌아갑니다.
 2. 워커는 코레일에 로그인한 뒤 `SEARCH_INTERVAL`(기본 3초) 간격으로 좌석을 조회하고, 자리가 나오면 즉시 예약합니다.
-3. 카드가 저장되어 있으면 예약 직후 **자동 결제**해 승차권을 발권합니다. 카드가 없거나 결제가 실패하면 결제 링크와 함께 안내하고, `PAYMENT_TIMEOUT_MINUTES`(기본 10분) 동안 카카오톡으로 리마인더를 보냅니다. 직접 결제한 뒤 `korailbot paid` 를 실행하면 알림이 멈춥니다.
-4. 결과는 카카오톡 알림, `korailbot status`, `korailbot logs` 로 확인합니다.
+3. 카드가 저장되어 있으면 예약 직후 **자동 결제**해 승차권을 발권합니다. 카드가 없거나 결제가 실패하면 결제 링크와 함께 안내하고, `PAYMENT_TIMEOUT_MINUTES`(기본 10분) 동안 텔레그램으로 리마인더를 보냅니다. 직접 결제한 뒤 `korailbot paid`(텔레그램에서는 `결제완료`)를 보내면 알림이 멈춥니다.
+4. 결과는 텔레그램 알림, `korailbot status`, `korailbot logs` 로 확인합니다.
 
 CLI와 워커는 Redis로 상태를 공유합니다. 계정과 카드 정보는 Redis에 **AES-256-GCM으로 암호화**되어 저장됩니다.
 
@@ -48,9 +48,9 @@ CLI와 워커는 Redis로 상태를 공유합니다. 계정과 카드 정보는 
 | `paid` | 직접 결제를 완료했음을 알림: 리마인더 중단, 랜덤 배치에서는 다음 좌석 검색 진행 |
 | `logs [-n N] [-f]` | 최신 워커 로그 출력 (`-f` 실시간) |
 | `card show / set / delete` | 자동 결제 카드 확인 / 등록·교체 / 삭제 |
-| `kakao link / status / test / unlink` | 카카오톡 알림 연동 관리 |
-| `kakao pair / unpair` | 카카오톡 챗봇 사용자 등록 코드 발급 / 전체 해제 |
-| `serve [--host H] [--port P]` | 카카오톡 챗봇(오픈빌더 스킬) 서버 실행 |
+| `telegram` | 텔레그램 봇 실행 (롱 폴링, 공개 서버 불필요) |
+| `pair / unpair` | 텔레그램 채팅 등록 코드 발급 / 전체 해제 |
+| `kakao link / status / test / unlink` | (선택) 카카오톡 알림 연동 관리 |
 | `stations [검색어]` | 역 이름 목록/검색 |
 
 ### `start` 옵션
@@ -91,25 +91,26 @@ korailbot start --date 20261225 --from 광명 --to 동대구 --time 1700 --passe
 - 카드와 코레일 계정은 Redis에 **AES-256-GCM 암호화**로 저장됩니다. 키는 `CARD_ENCRYPTION_KEY` 환경변수를 쓰고, 없으면 `~/.korail_bot/secret.key`에 무작위 키를 한 번 생성해 보관합니다(권한 600). 이 파일을 지우거나 키를 바꾸면 저장 정보가 복호화되지 않아 다시 등록해야 합니다.
 - 워커에는 환경변수로 전달되며 argv(`ps`)에 노출되지 않습니다. 입력은 화면에 표시되지 않고(getpass), 로그와 알림에는 뒤 4자리(`****1234`)만 남습니다.
 
-## 카카오톡 챗봇 (카카오톡에서 예약 조작)
+## 텔레그램 봇 (휴대폰에서 예약 조작 + 알림)
 
-카카오톡 채널 챗봇으로 휴대폰에서 예약을 시작·조회·취소할 수 있습니다. `korailbot serve` 가 카카오 i 오픈빌더의 **스킬 서버**로 동작하며, 채널에 보낸 말을 받아 답합니다.
+텔레그램 봇으로 휴대폰에서 예약을 시작·조회·취소하고 결과 알림을 받습니다. **롱 폴링** 방식이라 공개 서버, 도메인, 인증서가 전혀 필요 없고 집 PC에서 그대로 동작합니다.
 
 ```
-예약                              # 조건을 하나씩 물어보는 안내 (출발일 → 출발역 → … → 확인)
+예약                              # 조건을 하나씩 물어보는 안내 (출발일 → 출발역 → … → 확인), 버튼 제공
 예약 20261225 서울 부산 0900 1200   # 한 줄로 시작
-상태 / 취소 / 결제완료 / 카드 / 연동 / 처음부터 / 도움말
+상태 / 취소 / 결제완료 / 카드 / 처음부터 / 도움말     (또는 /status /cancel /paid /card /reset /help)
 ```
 
-- **본인만 사용**: 처음 한 번 서버에서 `korailbot kakao pair` 로 코드를 만들고, 채널에 `등록 123456` 을 보내면 그 카카오 사용자만 봇을 조작할 수 있습니다 (`KAKAO_SKILL_ALLOWED_USERS` 로 고정도 가능). 등록되지 않은 사용자의 메시지는 거부됩니다.
-- **보안**: 코레일 비밀번호와 카드번호는 카카오톡으로 입력받지 않습니다(채팅 내용은 카카오 서버에 남습니다). 계정·카드 등록은 서버에서 `korailbot login`, `korailbot card set` 으로만 합니다.
-- **알림**: 예약 결과는 '나에게 보내기'(아래 알림 연동)로 옵니다. 챗봇에서 `연동` 을 보내면 연동 링크를 줍니다. 스킬 서버가 공개 주소를 갖고 있으므로 `KAKAO_REDIRECT_URI=https://<공개주소>/kakao/oauth` 로 두면 링크만 눌러도 연동이 끝납니다.
-- **필요한 것**: 카카오톡 채널 + 오픈빌더 봇 + 공개 HTTPS 주소(도메인 + 인증서 또는 Cloudflare Tunnel). 설정 절차는 [docs/INSTALL.md 'B. 카카오톡 챗봇'](docs/INSTALL.md) 참고.
-- **운영**: `korailbot serve` 는 `127.0.0.1:8090` 에서 HTTP로 듣습니다. 앞에 Caddy/nginx 로 HTTPS 를 붙이고 스킬 URL 을 `https://<도메인>/kakao/skill/<KAKAO_SKILL_SECRET>` 로 등록하세요. 오픈빌더는 5초 안에 응답을 요구하므로 서버와 Redis 는 같은 기기에 두는 것이 좋습니다.
+1. 텔레그램에서 `@BotFather` → `/newbot` → 토큰을 `.env` 의 `TELEGRAM_BOT_TOKEN` 에 넣습니다.
+2. `korailbot telegram` 을 실행해 둡니다(systemd 로 상시 실행 권장, `docs/INSTALL.md`).
+3. `korailbot pair` 로 코드를 만들고, 텔레그램에서 봇에게 `등록 123456` 을 보냅니다. 그 채팅만 봇을 조작하고 알림을 받습니다(`TELEGRAM_ALLOWED_CHAT_IDS` 로 고정도 가능). 등록되지 않은 채팅의 메시지는 거부됩니다.
 
-## 카카오톡 알림
+- **보안**: 코레일 비밀번호와 카드번호는 채팅으로 입력받지 않습니다. 계정·카드 등록은 서버에서 `korailbot login`, `korailbot card set` 으로만 합니다. 봇 토큰은 `.env` 에만 두세요.
+- **알림**: 예약 성공/실패, 결제 리마인더, 오류가 등록된 채팅으로 옵니다. 카카오톡으로도 받고 싶으면 아래 카카오톡 알림을 추가로 연동합니다.
 
-카카오 "나에게 보내기" API(`talk_message` 권한)를 사용해 예약 성공/실패, 결제 리마인더, 오류를 카카오톡 "나와의 채팅"으로 보냅니다. 카카오톡 채널이나 알림톡 비용은 없습니다.
+## (선택) 카카오톡 알림
+
+텔레그램 대신, 또는 텔레그램과 함께 카카오 "나에게 보내기" API(`talk_message` 권한)로 예약 성공/실패, 결제 리마인더, 오류를 카카오톡 "나와의 채팅"으로 보낼 수 있습니다. 카카오톡 채널이나 알림톡 비용은 없지만 카카오 개발자 앱 설정이 필요합니다. 텔레그램을 쓴다면 건너뛰어도 됩니다.
 
 1. [Kakao Developers](https://developers.kakao.com)에서 애플리케이션을 만들고 **REST API 키**를 확인합니다.
 2. **카카오 로그인**을 활성화하고 Redirect URI에 `http://localhost:8080/kakao/oauth` 를 등록합니다 (포트는 `KAKAO_LOCAL_PORT`로 변경 가능).
@@ -136,9 +137,9 @@ korailbot start --date 20261225 --from 광명 --to 동대구 --time 1700 --passe
 | `KAKAO_CLIENT_SECRET` | | 카카오 앱에서 Client Secret을 켠 경우 |
 | `KAKAO_LOCAL_PORT` | `8080` | `kakao link` 가 인증 응답을 받을 로컬 포트 |
 | `KAKAO_REDIRECT_URI` | `http://localhost:8080/kakao/oauth` | Kakao Developers에 등록한 Redirect URI |
-| `KAKAO_SKILL_HOST` / `KAKAO_SKILL_PORT` | `127.0.0.1` / `8090` | 챗봇 스킬 서버 바인드 주소 |
-| `KAKAO_SKILL_SECRET` | | 스킬 URL 비밀 경로 (`/kakao/skill/<secret>`), `openssl rand -hex 16` |
-| `KAKAO_SKILL_ALLOWED_USERS` | | `kakao pair` 대신 허용할 오픈빌더 사용자 id(botUserKey) 목록 |
+| `TELEGRAM_BOT_TOKEN` | | @BotFather 토큰. 설정하면 `telegram` 명령과 텔레그램 알림이 활성화 |
+| `TELEGRAM_ALLOWED_CHAT_IDS` | | `pair` 대신 허용할 텔레그램 채팅 id 목록 |
+| `TELEGRAM_POLL_TIMEOUT` | `30` | 롱 폴링 대기 시간(초) |
 | `KORAIL_BOT_DATA_DIR` | `~/.korail_bot` | 워커 로그(`logs/`)와 `secret.key` 위치 |
 | `LOG_LEVEL` | `INFO` | `DEBUG`로 올리면 조회 로그가 상세해집니다 |
 
@@ -154,14 +155,15 @@ python -m pytest tests -q           # Docker가 있으면 테스트용 Redis 컨
 ```
 src/
 ├── cli.py                  # korailbot 명령줄 진입점
-├── kakao_skill/            # 카카오톡 챗봇: server.py(HTTP), bot.py(명령·예약 안내), responses.py
+├── chatbot/logic.py        # 채팅 명령·예약 안내 (전송 수단 무관)
+├── telegram_bot/           # 텔레그램 Bot API 클라이언트(api.py), 롱 폴링 루프(runner.py)
 ├── config/settings.py      # 환경변수 / .env
 ├── models/                 # TrainSearchParams, CardInfo, KakaoTokens ...
 ├── services/
 │   ├── korail_service.py       # pykorail 래퍼: 로그인, 조회, 예약, 결제
 │   ├── reservation_service.py  # 워커 프로세스 시작/중단/상태
-│   ├── kakao_service.py        # 카카오 OAuth, 나에게 보내기
-│   └── notifier.py             # 로그 + 카카오톡 알림
+│   ├── kakao_service.py        # (선택) 카카오 OAuth, 나에게 보내기
+│   └── notifier.py             # 로그 + 텔레그램 + 카카오톡 알림
 ├── storage/redis.py        # Redis 상태 저장 (카드/계정은 암호화)
 ├── worker/reservation_worker.py  # 백그라운드 검색·예약·결제·리마인더
 └── utils/                  # 검증, 역 코드, 암호화, 로깅
@@ -172,6 +174,6 @@ tests/                      # unit (Redis 불필요) / integration (Redis)
 
 - **Korail API**: [devgyurak/pykorail](https://github.com/devgyurak/pykorail)
 - **State**: Redis
-- **Notifications**: Kakao REST API (나에게 보내기)
+- **Chat/Notifications**: Telegram Bot API (long polling), Kakao REST API (optional)
 - **Crypto**: pycryptodome (AES-256-GCM)
 - **Testing**: pytest

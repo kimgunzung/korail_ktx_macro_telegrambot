@@ -9,7 +9,9 @@ def _notifier(linked=True, enabled=True):
     kakao = Mock(spec=KakaoService)
     kakao.enabled = enabled
     kakao.is_linked.return_value = linked
-    return Notifier(storage=Mock(), kakao=kakao, user_id=1), kakao
+    storage = Mock()
+    storage.get_paired_users.return_value = []
+    return Notifier(storage=storage, kakao=kakao, user_id=1, telegram=None), kakao
 
 
 class TestNotifier:

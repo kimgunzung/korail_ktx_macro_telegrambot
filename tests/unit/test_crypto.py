@@ -35,12 +35,19 @@ class TestEncryptJson:
         with pytest.raises(DecryptionError):
             decrypt_json("not-a-token")
 
-    def test_key_falls_back_to_bot_token(self):
+    def test_key_falls_back_to_generated_key_file(self, tmp_path):
+        import os
+        from utils import crypto
         with patch('config.settings.settings.CARD_ENCRYPTION_KEY', None), \
-             patch('config.settings.settings.TELEGRAM_BOT_TOKEN', 'tok-a'):
+             patch('config.settings.settings.DATA_DIR', str(tmp_path / "a")):
             token = encrypt_json({"x": 1})
             assert decrypt_json(token) == {"x": 1}
+            key_file = tmp_path / "a" / "secret.key"
+            assert key_file.is_file() and len(key_file.read_text().strip()) == 64
+            if os.name != "nt":
+                assert oct(key_file.stat().st_mode & 0o777) == "0o600"
+            assert crypto._local_key_material() == key_file.read_text().strip()  # reused, not regenerated
         with patch('config.settings.settings.CARD_ENCRYPTION_KEY', None), \
-             patch('config.settings.settings.TELEGRAM_BOT_TOKEN', 'tok-b'):
+             patch('config.settings.settings.DATA_DIR', str(tmp_path / "b")):
             with pytest.raises(DecryptionError):
-                decrypt_json(token)
+                decrypt_json(token)  # a different machine/key file cannot read it

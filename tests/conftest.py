@@ -1,13 +1,20 @@
 """Pytest configuration and shared fixtures."""
 import os
+import shutil
 import sys
+import tempfile
 from pathlib import Path
 import pytest
 
 # Add src/ to Python path so tests can import project modules
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-os.environ.setdefault("BOTTOKEN", "test-bot-token")
+# Keep worker logs and the generated encryption key out of the developer's home directory
+_TEST_DATA_DIR = tempfile.mkdtemp(prefix="korailbot-tests-")
+os.environ["KORAIL_BOT_DATA_DIR"] = _TEST_DATA_DIR
+os.environ["KORAIL_BOT_LOG_DIR"] = os.path.join(_TEST_DATA_DIR, "logs")
+os.environ.pop("KAKAO_REST_API_KEY", None)
+os.environ.pop("CARD_ENCRYPTION_KEY", None)
 
 # Redis for the integration tests: a throwaway Docker container when Docker is
 # available (testcontainers), otherwise whatever REDIS_HOST/REDIS_PORT point at
@@ -54,10 +61,11 @@ def pytest_configure(config):
 
 
 def pytest_unconfigure(config):
-    """Clean up Redis container after all tests."""
+    """Clean up Redis container and temp data after all tests."""
     global _redis_container
     if _redis_container:
         _redis_container.stop()
+    shutil.rmtree(_TEST_DATA_DIR, ignore_errors=True)
 
 
 @pytest.fixture(scope="session")

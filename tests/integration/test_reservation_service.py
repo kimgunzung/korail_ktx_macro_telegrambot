@@ -1,298 +1,186 @@
-"""
-Integration tests for reservation service.
-
-Tests process management, cancellation, and state management.
-"""
-import pytest
-import time
+"""Integration tests for ReservationService (worker process management, Redis-backed)."""
+import json
+from datetime import datetime, timedelta
 from unittest.mock import Mock, patch
 
+import pytest
+
+from config.settings import settings
+from models import (
+    CardInfo, KorailCredentials, MultiReservationStatus, PaymentStatus, ReservationPaymentStatus,
+    RunningReservation, SingleReservationInfo, TrainSearchParams,
+)
+from services.reservation_service import ReservationService, CARD_ENV_VAR, PASSWORD_ENV_VAR
 from storage import RedisStorage
-from services import TelegramService, ReservationService
-from models import UserSession, TrainSearchParams, RunningReservation
+
+USER = settings.LOCAL_USER_ID
 
 
-class TestReservationService:
-    """Test reservation service functionality."""
+def _params(**overrides) -> TrainSearchParams:
+    base = dict(dep_date="20991231", src_locate="서울", dst_locate="부산", dep_time="090000",
+                max_dep_time="1800", train_type="TrainType.KTX", train_type_display="KTX",
+                special_option="ReserveOption.GENERAL_FIRST", special_option_display="GENERAL_FIRST",
+                passenger_count=1, seat_strategy="consecutive")
+    base.update(overrides)
+    return TrainSearchParams(**base)
 
+
+def _creds() -> KorailCredentials:
+    return KorailCredentials(korail_id="010-1234-5678", korail_pw="s3cret")
+
+
+class TestStart:
     def setup_method(self):
-        """Set up test fixtures."""
         self.storage = RedisStorage()
-        self.telegram = Mock(spec=TelegramService)
-        self.service = ReservationService(self.storage, self.telegram)
+        self.service = ReservationService(self.storage, USER)
 
     def teardown_method(self):
-        """Clean up after each test."""
-        # Clean up any running processes
-        all_reservations = self.storage.get_all_running_reservations()
-        for reservation in all_reservations:
-            try:
-                import os
-                import signal
-                os.kill(reservation.process_id, signal.SIGTERM)
-            except:
-                pass
         self.storage.redis.flushdb()
 
     @patch('subprocess.Popen')
-    def test_start_reservation_process_success(self, mock_popen):
-        """Test starting a reservation process successfully."""
-        mock_process = Mock()
-        mock_process.pid = 12345
-        mock_popen.return_value = mock_process
+    def test_start_spawns_detached_worker_and_records_it(self, mock_popen, tmp_path):
+        mock_popen.return_value = Mock(pid=12345)
+        with patch('config.settings.settings.LOG_DIR', str(tmp_path / "logs")):
+            running = self.service.start(_creds(), _params())
 
-        chat_id = 99999
-        search_params = TrainSearchParams(
-            dep_date="20991231",
-            src_locate="서울",
-            dst_locate="부산",
-            dep_time="090000",
-            max_dep_time="1800",
-            train_type="TrainType.KTX",
-            train_type_display="KTX",
-            special_option="ReserveOption.GENERAL_FIRST",
-            special_option_display="GENERAL_FIRST",
-            passenger_count=1,
-            seat_strategy="consecutive"
-        )
-
-        success = self.service.start_reservation_process(
-            chat_id=chat_id,
-            username="010-1234-5678",
-            password="password123",
-            search_params=search_params
-        )
-
-        assert success is True
-        mock_popen.assert_called_once()
-
-        # Check storage
-        running = self.storage.get_running_reservation(chat_id)
-        assert running is not None
         assert running.process_id == 12345
-        assert running.search_params.src_locate == "서울"
+        stored = self.storage.get_running_reservation(USER)
+        assert stored is not None and stored.process_id == 12345
+        assert stored.search_params.src_locate == "서울"
+        assert stored.korail_id == "010-1234-5678"
 
-    def test_start_reservation_duplicate(self):
-        """Test starting reservation when one is already running."""
-        chat_id = 99999
-
-        # Create existing reservation
-        existing = RunningReservation(
-            chat_id=chat_id,
-            process_id=11111,
-            korail_id="010-1234-5678",
-            search_params=TrainSearchParams(
-                dep_date="20991231",
-                src_locate="서울",
-                dst_locate="부산",
-                dep_time="090000",
-                max_dep_time="1800",
-                train_type="TrainType.KTX",
-                train_type_display="KTX",
-                special_option="ReserveOption.GENERAL_FIRST",
-                special_option_display="GENERAL_FIRST",
-                passenger_count=1,
-                seat_strategy="consecutive"
-            )
-        )
-        self.storage.save_running_reservation(existing)
-
-        search_params = TrainSearchParams(
-            dep_date="20991231",
-            src_locate="대전",
-            dst_locate="광주",
-            dep_time="100000",
-            max_dep_time="1900",
-            train_type="TrainType.KTX",
-            train_type_display="KTX",
-            special_option="ReserveOption.GENERAL_FIRST",
-            special_option_display="GENERAL_FIRST",
-            passenger_count=1,
-            seat_strategy="consecutive"
-        )
-
-        with patch.object(self.service, '_process_alive', return_value=True):
-            success = self.service.start_reservation_process(
-                chat_id=chat_id,
-                username="010-1234-5678",
-                password="password123",
-                search_params=search_params
-            )
-
-        # Should fail because one is already running
-        assert success is False
-        self.telegram.send_message.assert_called_once()
-        call_args = self.telegram.send_message.call_args
-        assert "이미" in call_args[0][1] or "already" in call_args[0][1].lower()
-        # The existing reservation is untouched
-        assert self.storage.get_running_reservation(chat_id).process_id == 11111
+        args, kwargs = mock_popen.call_args
+        cmd = args[0]
+        assert cmd[1:3] == ['-m', 'worker.reservation_worker']
+        assert "s3cret" not in " ".join(cmd)                   # password never on argv
+        assert kwargs['env'][PASSWORD_ENV_VAR] == "s3cret"
+        assert CARD_ENV_VAR not in kwargs['env']
+        assert kwargs['cwd'].endswith('src')
+        assert kwargs.get('start_new_session') is True or 'creationflags' in kwargs
+        assert (tmp_path / "logs").is_dir()                    # worker log directory created
 
     @patch('subprocess.Popen')
-    def test_cancel_reservation_success(self, mock_popen):
-        """Test cancelling a running reservation."""
-        # Start a reservation first
-        mock_process = Mock()
-        mock_process.pid = 12345
-        mock_popen.return_value = mock_process
-
-        chat_id = 99999
-        search_params = TrainSearchParams(
-            dep_date="20991231",
-            src_locate="서울",
-            dst_locate="부산",
-            dep_time="090000",
-            max_dep_time="1800",
-            train_type="TrainType.KTX",
-            train_type_display="KTX",
-            special_option="ReserveOption.GENERAL_FIRST",
-            special_option_display="GENERAL_FIRST",
-            passenger_count=1,
-            seat_strategy="consecutive"
-        )
-
-        self.service.start_reservation_process(
-            chat_id=chat_id,
-            username="010-1234-5678",
-            password="password123",
-            search_params=search_params
-        )
-
-        # Now cancel it
-        with patch('os.kill') as mock_kill:
-            self.service.cancel_reservation(chat_id)
-
-            # Should have killed the process
-            mock_kill.assert_called()
-
-            # Should have cleaned up storage
-            running = self.storage.get_running_reservation(chat_id)
-            assert running is None
-
-            # Should have notified user
-            assert self.telegram.send_message.call_count >= 2  # Start + cancel
-
-    def test_cancel_reservation_no_running(self):
-        """Test cancelling when no reservation is running."""
-        chat_id = 99999
-
-        cancelled = self.service.cancel_reservation(chat_id)
-
-        # Nothing to cancel: report False and leave the user feedback to the command handler
-        assert cancelled is False
-        self.telegram.send_message.assert_not_called()
-
-    def test_get_status_no_reservation(self):
-        """Test getting status when no reservation is running."""
-        chat_id = 99999
-
-        status = self.service.get_status(chat_id)
-
-        assert "없" in status or "no" in status.lower()
-
-    def test_get_status_with_reservation(self):
-        """Test getting status with running reservation."""
-        chat_id = 99999
-
-        reservation = RunningReservation(
-            chat_id=chat_id,
-            process_id=12345,
-            korail_id="010-1234-5678",
-            search_params=TrainSearchParams(
-                dep_date="20991231",
-                src_locate="서울",
-                dst_locate="부산",
-                dep_time="090000",
-                max_dep_time="1800",
-                train_type="TrainType.KTX",
-                train_type_display="KTX",
-                special_option="ReserveOption.GENERAL_FIRST",
-                special_option_display="GENERAL_FIRST",
-                passenger_count=1,
-                seat_strategy="consecutive"
-            )
-        )
-        self.storage.save_running_reservation(reservation)
-
-        status = self.service.get_status(chat_id)
-
-        assert "서울" in status
-        assert "부산" in status
-        assert "20991231" in status
+    def test_start_passes_card_via_env(self, mock_popen, tmp_path):
+        mock_popen.return_value = Mock(pid=1)
+        card = CardInfo(number="4111111111111111", expire="3512", password="12", verify_number="900101")
+        with patch('config.settings.settings.LOG_DIR', str(tmp_path)):
+            self.service.start(_creds(), _params(), card=card)
+        env = mock_popen.call_args.kwargs['env']
+        assert CardInfo.from_dict(json.loads(env[CARD_ENV_VAR])) == card
+        assert "4111111111111111" not in " ".join(mock_popen.call_args.args[0])
 
     @patch('subprocess.Popen')
-    def test_cancel_all_reservations(self, mock_popen):
-        """Test cancelling all reservations."""
-        mock_process1 = Mock()
-        mock_process1.pid = 11111
-        mock_process2 = Mock()
-        mock_process2.pid = 22222
+    def test_start_refused_while_running(self, mock_popen, tmp_path):
+        mock_popen.return_value = Mock(pid=4242)
+        with patch('config.settings.settings.LOG_DIR', str(tmp_path)), \
+             patch.object(ReservationService, '_process_alive', return_value=True):
+            self.service.start(_creds(), _params())
+            with pytest.raises(RuntimeError, match="이미 진행 중"):
+                self.service.start(_creds(), _params())
+        assert mock_popen.call_count == 1
 
-        mock_popen.side_effect = [mock_process1, mock_process2]
+    @patch('subprocess.Popen')
+    def test_stale_record_is_replaced(self, mock_popen, tmp_path):
+        mock_popen.return_value = Mock(pid=4242)
+        self.storage.save_running_reservation(RunningReservation(
+            chat_id=USER, process_id=999999999, korail_id="x", search_params=_params()))
+        with patch('config.settings.settings.LOG_DIR', str(tmp_path)):
+            running = self.service.start(_creds(), _params())
+        assert running.process_id == 4242
 
-        # Start two reservations
-        search_params = TrainSearchParams(
-            dep_date="20991231",
-            src_locate="서울",
-            dst_locate="부산",
-            dep_time="090000",
-            max_dep_time="1800",
-            train_type="TrainType.KTX",
-            train_type_display="KTX",
-            special_option="ReserveOption.GENERAL_FIRST",
-            special_option_display="GENERAL_FIRST",
-            passenger_count=1,
-            seat_strategy="consecutive"
-        )
-
-        self.service.start_reservation_process(11111, "010-1111-1111", "pass1", search_params)
-        self.service.start_reservation_process(22222, "010-2222-2222", "pass2", search_params)
-
-        # Cancel all
-        with patch('os.kill') as mock_kill:
-            count = self.service.cancel_all_reservations(99999)
-
-            assert count == 2
-            assert mock_kill.call_count == 2
-
-            # All should be cleaned up
-            all_reservations = self.storage.get_all_running_reservations()
-            assert len(all_reservations) == 0
-
-    def test_process_cleanup_on_invalid_pid(self):
-        """Test cleanup when process PID is invalid."""
-        chat_id = 99999
-
-        # Manually create reservation with invalid PID
-        reservation = RunningReservation(
-            chat_id=chat_id,
-            process_id=999999999,  # Invalid PID
-            korail_id="010-1234-5678",
-            search_params=TrainSearchParams(
-                dep_date="20991231",
-                src_locate="서울",
-                dst_locate="부산",
-                dep_time="090000",
-                max_dep_time="1800",
-                train_type="TrainType.KTX",
-                train_type_display="KTX",
-                special_option="ReserveOption.GENERAL_FIRST",
-                special_option_display="GENERAL_FIRST",
-                passenger_count=1,
-                seat_strategy="consecutive"
-            )
-        )
-        self.storage.save_running_reservation(reservation)
-
-        # Try to cancel - should handle gracefully
-        self.service.cancel_reservation(chat_id)
-
-        # Should still clean up storage
-        running = self.storage.get_running_reservation(chat_id)
-        assert running is None
+    @patch('subprocess.Popen')
+    def test_start_clears_previous_run_state(self, mock_popen, tmp_path):
+        mock_popen.return_value = Mock(pid=4242)
+        self.storage.save_partial_reservation(USER, 0, {"train_info": "old"})
+        self.storage.save_payment_status(PaymentStatus(chat_id=USER, completed=True))
+        with patch('config.settings.settings.LOG_DIR', str(tmp_path)):
+            self.service.start(_creds(), _params())
+        assert self.storage.get_partial_reservations(USER) == []
+        assert self.storage.get_payment_status(USER) is None
 
 
-if __name__ == "__main__":
-    pytest.main([__file__, "-v"])
+class TestCancelAndStatus:
+    def setup_method(self):
+        self.storage = RedisStorage()
+        self.service = ReservationService(self.storage, USER)
+
+    def teardown_method(self):
+        self.storage.redis.flushdb()
+
+    def _running(self, pid=4321):
+        self.storage.save_running_reservation(RunningReservation(
+            chat_id=USER, process_id=pid, korail_id="010-1234-5678", search_params=_params()))
+
+    def test_cancel_terminates_and_cleans_up(self):
+        self._running()
+        self.storage.save_partial_reservation(USER, 0, {"train_info": "x"})
+        with patch.object(ReservationService, '_process_alive', return_value=True), patch('os.kill') as kill:
+            cancelled = self.service.cancel()
+        kill.assert_called_once()
+        assert kill.call_args.args[0] == 4321
+        assert cancelled is not None and cancelled.process_id == 4321
+        assert self.storage.get_running_reservation(USER) is None
+        assert self.storage.get_partial_reservations(USER) == []
+
+    def test_cancel_without_running_returns_none(self):
+        assert self.service.cancel() is None
+
+    def test_cancel_dead_process_still_cleans(self):
+        self._running(pid=999999999)
+        with patch.object(ReservationService, '_process_alive', return_value=False), patch('os.kill') as kill:
+            assert self.service.cancel() is not None
+        kill.assert_not_called()
+        assert self.storage.get_running_reservation(USER) is None
+
+    def test_running_drops_dead_record(self):
+        self._running(pid=999999999)
+        assert self.service.running() is None
+        assert self.storage.get_running_reservation(USER) is None
+
+    def test_running_keeps_live_record(self):
+        self._running()
+        with patch.object(ReservationService, '_process_alive', return_value=True):
+            assert self.service.running().process_id == 4321
+
+
+class TestConfirmPayment:
+    def setup_method(self):
+        self.storage = RedisStorage()
+        self.service = ReservationService(self.storage, USER)
+
+    def teardown_method(self):
+        self.storage.redis.flushdb()
+
+    def test_marks_payment_status_completed(self):
+        self.storage.save_payment_status(PaymentStatus(chat_id=USER, completed=False, reminder_active=True))
+        text = self.service.confirm_payment()
+        status = self.storage.get_payment_status(USER)
+        assert status.completed is True and status.reminder_active is False
+        assert "리마인더" in text
+
+    def test_raises_seat_flag_in_random_mode(self):
+        self.storage.set_current_seat_index(USER, 1)
+        text = self.service.confirm_payment()
+        assert self.storage.is_payment_ready(USER, 1)
+        assert self.storage.get_current_seat_index(USER) is None
+        assert "2번째 좌석" in text
+
+    def test_marks_pending_seats_paid(self):
+        now = datetime.now()
+        self.storage.save_multi_reservation_status(MultiReservationStatus(
+            chat_id=USER, total_seats=2, seat_strategy="random", created_at=now, reservations=[
+                SingleReservationInfo("r1", None, now, now + timedelta(minutes=10), ReservationPaymentStatus.PENDING, 1, "a"),
+                SingleReservationInfo("r2", None, now, now + timedelta(minutes=10), ReservationPaymentStatus.PAID, 2, "b"),
+            ]))
+        self.service.confirm_payment()
+        multi = self.storage.get_multi_reservation_status(USER)
+        assert all(r.status == ReservationPaymentStatus.PAID for r in multi.reservations)
+        assert multi.manually_stopped is True
+
+    def test_nothing_waiting_records_intent(self):
+        text = self.service.confirm_payment()
+        assert "대기 중인 결제가 없습니다" in text
+        assert self.storage.get_payment_status(USER).completed is True
 
 
 class TestProcessAlive:
@@ -319,6 +207,3 @@ class TestProcessAlive:
             assert ReservationService._process_alive(9999999) is False
             assert ReservationService._process_alive(0) is False
             kill.assert_not_called()
-
-
-from services.reservation_service import ReservationService  # noqa: E402  (used above)

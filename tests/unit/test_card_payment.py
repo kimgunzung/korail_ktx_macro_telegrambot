@@ -187,72 +187,62 @@ class TestPayReservation:
         fake.reservations.pay.assert_not_called()
 
 
-# ------------------------------------------------------ background process bits
+# ----------------------------------------------------------------- worker bits
 
-class TestBackgroundProcessAutoPayment:
-    def _process(self, card=None):
-        """Build a BackgroundReservationProcess without running __init__."""
-        from telegramBot.telebotBackProcess import BackgroundReservationProcess
+class TestWorkerAutoPayment:
+    def _worker(self, card=None):
+        """Build a ReservationWorker without running __init__."""
+        from worker.reservation_worker import ReservationWorker
 
-        process = BackgroundReservationProcess.__new__(BackgroundReservationProcess)
-        process.card = card
-        process.korail = Mock()
-        process.chat_id = "1"
-        process.seat_strategy = "consecutive"
-        return process
+        worker = ReservationWorker.__new__(ReservationWorker)
+        worker.card = card
+        worker.korail = Mock()
+        worker.user_id = 1
+        worker.seat_strategy = "consecutive"
+        worker.notifier = Mock()
+        worker.storage = Mock()
+        return worker
 
     def test_load_card_from_env_and_scrub(self):
-        from telegramBot.telebotBackProcess import BackgroundReservationProcess
+        from worker.reservation_worker import ReservationWorker
 
         with patch.dict(os.environ, {"KORAIL_BOT_CARD": json.dumps(_card().to_dict())}):
-            card = BackgroundReservationProcess._load_card_from_env()
+            card = ReservationWorker._load_card_from_env()
             assert card == _card()
             assert "KORAIL_BOT_CARD" not in os.environ
 
     def test_load_card_absent_or_malformed(self):
-        from telegramBot.telebotBackProcess import BackgroundReservationProcess
+        from worker.reservation_worker import ReservationWorker
 
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("KORAIL_BOT_CARD", None)
-            assert BackgroundReservationProcess._load_card_from_env() is None
+            assert ReservationWorker._load_card_from_env() is None
         with patch.dict(os.environ, {"KORAIL_BOT_CARD": "{not json"}):
-            assert BackgroundReservationProcess._load_card_from_env() is None
+            assert ReservationWorker._load_card_from_env() is None
 
     def test_success_receipt(self):
-        process = self._process(_card())
-        process.korail.pay_reservation.return_value = 59800
-        paid, text = process._try_auto_payment(_reservation())
+        worker = self._worker(_card())
+        worker.korail.pay_reservation.return_value = 59800
+        paid, text = worker._try_auto_payment(_reservation())
         assert paid is True
         assert "자동 결제 완료" in text and "****1111" in text and "59,800원" in text
         assert "4111111111111111" not in text
 
     def test_failure_falls_back_to_manual_instructions(self):
-        process = self._process(_card())
-        process.korail.pay_reservation.side_effect = PaymentError("카드 한도 초과 (WRP000123)")
-        paid, text = process._try_auto_payment(_reservation())
+        worker = self._worker(_card())
+        worker.korail.pay_reservation.side_effect = PaymentError("카드 한도 초과 (WRP000123)")
+        paid, text = worker._try_auto_payment(_reservation())
         assert paid is False
         assert "자동 결제 실패" in text and "한도 초과" in text
-        assert "분내에" in text  # manual payment deadline text follows
+        assert "korailbot paid" in text  # manual payment instructions follow
 
     def test_access_restriction_is_reported_not_raised(self):
-        process = self._process(_card())
-        process.korail.pay_reservation.side_effect = KorailAccessRestrictedError("blocked")
-        paid, text = process._try_auto_payment(_reservation())
+        worker = self._worker(_card())
+        worker.korail.pay_reservation.side_effect = KorailAccessRestrictedError("blocked")
+        paid, text = worker._try_auto_payment(_reservation())
         assert paid is False and "이용 제한" in text
 
     def test_no_card_means_no_attempt(self):
-        process = self._process(None)
-        assert process._try_auto_payment(_reservation()) == (False, "")
-        process.korail.pay_reservation.assert_not_called()
-
-    def test_final_random_message_marks_paid_seats(self):
-        process = self._process(_card())
-        text = process._build_final_random_message(
-            [{"train_info": "KTX 101", "paid": True}, {"train_info": "KTX 103", "paid": False}], 2, all_paid=False
-        )
-        assert "좌석 1: KTX 101 💳 결제완료" in text
-        assert "좌석 2: KTX 103\n" in text
-        assert "결제되지 않은 좌석" in text
-
-        text = process._build_final_random_message([{"train_info": "KTX 101", "paid": True}], 1, all_paid=True)
-        assert "모든 좌석이 카드(****1111)로 자동 결제" in text
+        worker = self._worker(None)
+        assert worker._try_auto_payment(_reservation()) == (False, "")
+        worker.korail.pay_reservation.assert_not_called()

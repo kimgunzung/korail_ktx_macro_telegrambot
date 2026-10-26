@@ -1,50 +1,43 @@
-IMAGE_NAME := geunsam2/korailbot:v3
+IMAGE_NAME := korailbot:local
+PY := $(if $(wildcard .venv/bin/python),.venv/bin/python,python3)
 
 help:           ## Show this help.
 	@fgrep -h "##" $(MAKEFILE_LIST) | fgrep -v fgrep | sed -e 's/\\$$//' | sed -e 's/##//'
 
-.PHONY: setup
-setup:			## Setup development environment (install pipenv if needed)
-	@command -v pipenv >/dev/null 2>&1 || { echo "Installing pipenv..."; brew install pipenv; }
-	@command -v pyenv >/dev/null 2>&1 || { echo "Installing pyenv..."; brew install pyenv; }
+.PHONY: venv
+venv:			## Create .venv with Python 3.12 and install dependencies
+	python3.12 -m venv .venv
+	.venv/bin/pip install --upgrade pip
+	.venv/bin/pip install -r requirements.txt
 
 .PHONY: install
-install:		## Install dependencies with pipenv
-	pipenv install
+install:		## Install dependencies into the current environment
+	pip install -r requirements.txt
 
-.PHONY: run
-run:			## Run the application locally
-	pipenv run python src/app.py
+.PHONY: redis
+redis:			## Start a local Redis (docker)
+	docker compose up -d redis
 
-.PHONY: shell
-shell:			## Open pipenv shell
-	pipenv shell
+.PHONY: status
+status:			## Show reservation status
+	$(PY) src/cli.py status
 
 .PHONY: requirements
-requirements:	## Generate requirements.txt from Pipfile.lock (for Docker)
+requirements:	## Generate requirements.txt from Pipfile.lock
 	pipenv requirements > requirements.txt
-	echo "uwsgi==2.0.31" >> requirements.txt
 
 .PHONY: test
-test:			## Run all tests with pytest
-	pipenv run pytest tests/ -v
+test:			## Run all tests with pytest (needs Docker or a local Redis, see tests/README.md)
+	$(PY) -m pytest tests/ -v
 
 .PHONY: test-unit
 test-unit:		## Run unit tests only
-	pipenv run pytest tests/unit -v
+	$(PY) -m pytest tests/unit -v
 
 .PHONY: test-integration
-test-integration:	## Run integration tests only (needs Docker or a local Redis, see tests/README.md)
-	pipenv run pytest tests/integration -v
-
-.PHONY: test-e2e
-test-e2e:		## Run end-to-end flow tests only
-	pipenv run pytest tests/e2e -v
+test-integration:	## Run integration tests only
+	$(PY) -m pytest tests/integration -v
 
 .PHONY: build
 build:			## Build Docker Image
 	docker build -t ${IMAGE_NAME} .
-
-.PHONY: publish
-publish: build	## Publish Docker Image
-	docker push ${IMAGE_NAME}

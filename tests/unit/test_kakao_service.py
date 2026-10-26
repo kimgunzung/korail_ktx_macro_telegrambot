@@ -262,3 +262,44 @@ class TestDisabled:
 
     def test_enabled_true_with_config(self, kakao_env):
         assert KakaoService(MemoryStorage()).enabled is True
+
+
+class TestLocalOAuthRedirect:
+    def test_catches_single_redirect(self):
+        import socket
+        import threading
+        import urllib.request
+        from services.kakao_service import wait_for_oauth_redirect
+
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", 0))
+            port = s.getsockname()[1]
+
+        result = {}
+
+        def serve():
+            result.update(wait_for_oauth_redirect(port, timeout=10))
+
+        thread = threading.Thread(target=serve)
+        thread.start()
+        deadline = time.time() + 5
+        body = None
+        while time.time() < deadline:
+            try:
+                with urllib.request.urlopen(f"http://127.0.0.1:{port}/kakao/oauth?code=abc123&state=1.deadbeef", timeout=1) as r:
+                    body = r.read().decode("utf-8")
+                    break
+            except Exception:
+                time.sleep(0.05)
+        thread.join(timeout=5)
+        assert result == {"code": "abc123", "state": "1.deadbeef"}
+        assert body and "인증 코드를 받았습니다" in body
+
+    def test_times_out_with_empty_result(self):
+        import socket
+        from services.kakao_service import wait_for_oauth_redirect
+
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", 0))
+            port = s.getsockname()[1]
+        assert wait_for_oauth_redirect(port, timeout=0.2) == {}

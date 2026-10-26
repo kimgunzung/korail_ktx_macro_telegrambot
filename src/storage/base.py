@@ -2,198 +2,85 @@
 from abc import ABC, abstractmethod
 from typing import Optional, List
 
-from models import UserSession, RunningReservation, PaymentStatus, MultiReservationStatus, KakaoTokens, CardInfo
+from models import (
+    RunningReservation, PaymentStatus, MultiReservationStatus, ReservationResult,
+    KakaoTokens, CardInfo, KorailCredentials,
+)
 
 
 class StorageInterface(ABC):
-    """Abstract interface for application state storage."""
+    """Abstract interface for application state storage.
 
-    # User Session Management
-    @abstractmethod
-    def get_user_session(self, chat_id: int) -> Optional[UserSession]:
-        """Get user session by chat ID."""
-        pass
+    All methods take the local user id (``settings.LOCAL_USER_ID``); the tool is
+    single-user but the key layout keeps room for more.
+    """
 
+    # Korail credentials (encrypted at rest)
     @abstractmethod
-    def save_user_session(self, session: UserSession) -> None:
-        """Save or update user session."""
-        pass
+    def get_credentials(self, user_id: int) -> Optional[KorailCredentials]: ...
 
     @abstractmethod
-    def delete_user_session(self, chat_id: int) -> None:
-        """Delete user session."""
-        pass
+    def save_credentials(self, user_id: int, credentials: KorailCredentials) -> None: ...
 
     @abstractmethod
-    def get_all_user_sessions(self) -> List[UserSession]:
-        """Get all user sessions."""
-        pass
+    def delete_credentials(self, user_id: int) -> None: ...
 
     # Running Reservation Management
     @abstractmethod
-    def get_running_reservation(self, chat_id: int) -> Optional[RunningReservation]:
-        """Get running reservation by chat ID."""
-        pass
+    def get_running_reservation(self, user_id: int) -> Optional[RunningReservation]: ...
 
     @abstractmethod
-    def save_running_reservation(self, reservation: RunningReservation) -> None:
-        """Save running reservation."""
-        pass
+    def save_running_reservation(self, reservation: RunningReservation) -> None: ...
 
     @abstractmethod
-    def delete_running_reservation(self, chat_id: int) -> None:
-        """Delete running reservation."""
-        pass
+    def delete_running_reservation(self, user_id: int) -> None: ...
 
     @abstractmethod
-    def get_all_running_reservations(self) -> List[RunningReservation]:
-        """Get all running reservations."""
-        pass
+    def get_all_running_reservations(self) -> List[RunningReservation]: ...
+
+    # Last worker result
+    @abstractmethod
+    def get_last_result(self, user_id: int) -> Optional[ReservationResult]: ...
+
+    @abstractmethod
+    def save_last_result(self, user_id: int, result: ReservationResult) -> None: ...
 
     # Payment Status Management
     @abstractmethod
-    def get_payment_status(self, chat_id: int) -> Optional[PaymentStatus]:
-        """Get payment status by chat ID."""
-        pass
+    def get_payment_status(self, user_id: int) -> Optional[PaymentStatus]: ...
 
     @abstractmethod
-    def save_payment_status(self, status: PaymentStatus) -> None:
-        """Save payment status."""
-        pass
+    def save_payment_status(self, status: PaymentStatus) -> None: ...
 
     @abstractmethod
-    def delete_payment_status(self, chat_id: int) -> None:
-        """Delete payment status."""
-        pass
+    def delete_payment_status(self, user_id: int) -> None: ...
 
-    # Subscriber Management
+    # Multi-Reservation Status Management (random seating)
     @abstractmethod
-    def add_subscriber(self, chat_id: int) -> None:
-        """Add a subscriber for notifications."""
-        pass
+    def get_multi_reservation_status(self, user_id: int) -> Optional[MultiReservationStatus]: ...
 
     @abstractmethod
-    def remove_subscriber(self, chat_id: int) -> None:
-        """Remove a subscriber."""
-        pass
+    def save_multi_reservation_status(self, status: MultiReservationStatus) -> None: ...
 
     @abstractmethod
-    def get_all_subscribers(self) -> List[int]:
-        """Get all subscriber chat IDs."""
-        pass
-
-    @abstractmethod
-    def is_subscriber(self, chat_id: int) -> bool:
-        """Check if chat ID is a subscriber."""
-        pass
-
-    # Admin Session Management
-    @abstractmethod
-    def is_admin_authenticated(self, chat_id: int) -> bool:
-        """Check if chat ID is authenticated as admin."""
-        pass
-
-    @abstractmethod
-    def set_admin_authenticated(self, chat_id: int, authenticated: bool = True) -> None:
-        """Set admin authentication status for chat ID."""
-        pass
-
-    @abstractmethod
-    def is_waiting_for_admin_password(self, chat_id: int) -> bool:
-        """Check if user is waiting to enter admin password."""
-        pass
-
-    @abstractmethod
-    def set_waiting_for_admin_password(self, chat_id: int, waiting: bool = True) -> None:
-        """Set whether user is waiting to enter admin password."""
-        pass
-
-    @abstractmethod
-    def get_pending_admin_command(self, chat_id: int) -> Optional[str]:
-        """Get pending admin command waiting for authentication."""
-        pass
-
-    @abstractmethod
-    def set_pending_admin_command(self, chat_id: int, command: Optional[str]) -> None:
-        """Set pending admin command waiting for authentication."""
-        pass
-
-    # Multi-Reservation Status Management
-    @abstractmethod
-    def get_multi_reservation_status(self, chat_id: int) -> Optional[MultiReservationStatus]:
-        """Get multi-reservation status by chat ID."""
-        pass
-
-    @abstractmethod
-    def save_multi_reservation_status(self, status: MultiReservationStatus) -> None:
-        """Save multi-reservation status."""
-        pass
-
-    @abstractmethod
-    def delete_multi_reservation_status(self, chat_id: int) -> None:
-        """Delete multi-reservation status."""
-        pass
-
-    @abstractmethod
-    def get_all_multi_reservation_statuses(self) -> List[MultiReservationStatus]:
-        """Get all multi-reservation statuses."""
-        pass
+    def delete_multi_reservation_status(self, user_id: int) -> None: ...
 
     # KakaoTalk Link Management
     @abstractmethod
-    def get_kakao_tokens(self, chat_id: int) -> Optional[KakaoTokens]:
-        """Get the Kakao OAuth tokens linked to a chat ID."""
-        pass
+    def get_kakao_tokens(self, user_id: int) -> Optional[KakaoTokens]: ...
 
     @abstractmethod
-    def save_kakao_tokens(self, tokens: KakaoTokens) -> None:
-        """Save Kakao OAuth tokens."""
-        pass
+    def save_kakao_tokens(self, tokens: KakaoTokens) -> None: ...
 
     @abstractmethod
-    def delete_kakao_tokens(self, chat_id: int) -> None:
-        """Remove the Kakao link of a chat ID."""
-        pass
+    def delete_kakao_tokens(self, user_id: int) -> None: ...
 
-    # Card Info (automatic payment) - entry buffer, short lived
+    # Saved Card (automatic payment) - encrypted at rest
     @abstractmethod
-    def get_card_info(self, chat_id: int) -> Optional[CardInfo]:
-        """Get the card currently being entered (partial data allowed)."""
-        pass
+    def get_saved_card(self, user_id: int) -> Optional[CardInfo]: ...
 
     @abstractmethod
-    def save_card_info(self, chat_id: int, card: CardInfo) -> None:
-        """Save the card being entered with a short TTL."""
-        pass
+    def save_saved_card(self, user_id: int, card: CardInfo) -> None: ...
 
     @abstractmethod
-    def delete_card_info(self, chat_id: int) -> None:
-        """Forget the card being entered."""
-        pass
-
-    # Saved Card (automatic payment) - persistent, encrypted at rest
-    @abstractmethod
-    def get_saved_card(self, chat_id: int) -> Optional[CardInfo]:
-        """Get the card saved for automatic payment of future reservations."""
-        pass
-
-    @abstractmethod
-    def save_saved_card(self, chat_id: int, card: CardInfo) -> None:
-        """Persist the card for automatic payment."""
-        pass
-
-    @abstractmethod
-    def delete_saved_card(self, chat_id: int) -> None:
-        """Remove the saved card."""
-        pass
-
-    # Debug Mode Management
-    @abstractmethod
-    def is_debug_mode(self) -> bool:
-        """Check if global debug mode is enabled."""
-        pass
-
-    @abstractmethod
-    def set_debug_mode(self, enabled: bool) -> None:
-        """Enable or disable global debug mode."""
-        pass
+    def delete_saved_card(self, user_id: int) -> None: ...

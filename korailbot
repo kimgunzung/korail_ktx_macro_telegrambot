@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Wrapper: run the korailbot CLI with the project's virtualenv when present.
+set -e
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -x "$DIR/.venv/bin/python" ]; then
+  PY="$DIR/.venv/bin/python"
+elif [ -x "/app/src/cli.py" ] || [ -n "$PYTHONPATH" ]; then
+  PY="python"
+else
+  PY="${PYTHON:-python3}"
+fi
+if [ -f "$DIR/src/cli.py" ]; then
+  exec "$PY" "$DIR/src/cli.py" "$@"
+else
+  exec "$PY" /app/src/cli.py "$@"
+fi

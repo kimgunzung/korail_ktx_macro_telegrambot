@@ -1,8 +1,8 @@
 """KakaoTalk integration ("나에게 보내기", Kakao REST API).
 
-Each Telegram chat can link a Kakao account through OAuth (``/kakao``). The bot then
-mirrors important notifications (reservation result, payment deadline, ...) to the
-user's KakaoTalk "나와의 채팅" room using the ``talk_message`` scope.
+The local user links a Kakao account through OAuth (``korailbot kakao link``). The
+worker then sends important notifications (reservation result, payment deadline,
+...) to the user's KakaoTalk "나와의 채팅" room using the ``talk_message`` scope.
 
 Kakao app prerequisites (https://developers.kakao.com):
 - 카카오 로그인 활성화, Redirect URI 등록 (``KAKAO_REDIRECT_URI``)
@@ -14,6 +14,8 @@ import hmac
 import json
 import threading
 import time
+from http.server import BaseHTTPRequestHandler, HTTPServer
+from urllib.parse import urlparse, parse_qs
 from datetime import datetime
 from typing import Optional
 from urllib.parse import urlencode
@@ -93,10 +95,12 @@ class KakaoService:
 
     # ------------------------------------------------------------------- oauth
 
+    _state_nonce = hashlib.sha256(str(time.time()).encode() + json.dumps({"pid": id(threading)}).encode()).hexdigest()
+
     @staticmethod
     def _state_secret() -> bytes:
-        # Derived from the bot token: nobody else can forge a state for a chat id.
-        return hashlib.sha256(("kakao-state:" + settings.TELEGRAM_BOT_TOKEN).encode()).digest()
+        # Per-process random secret: a redirect carrying a forged state is rejected.
+        return hashlib.sha256(("kakao-state:" + KakaoService._state_nonce).encode()).digest()
 
     def build_state(self, chat_id: int) -> str:
         """Opaque, tamper-evident OAuth ``state`` carrying the Telegram chat id."""
@@ -279,3 +283,48 @@ class KakaoService:
         if not tokens:
             return None
         return datetime.fromtimestamp(tokens.linked_at).strftime("%Y-%m-%d %H:%M")
+
+
+class _OAuthRedirectHandler(BaseHTTPRequestHandler):
+    """Catches the single ``GET /kakao/oauth?code=...&state=...`` redirect."""
+
+    result: dict = {}
+
+    def do_GET(self):  # noqa: N802 - BaseHTTPRequestHandler API
+        parsed = urlparse(self.path)
+        query = {k: v[0] for k, v in parse_qs(parsed.query).items()}
+        _OAuthRedirectHandler.result = query
+        ok = "code" in query and "error" not in query
+        body = (
+            "<html><head><meta charset='utf-8'><title>코레일 봇 카카오톡 연동</title></head><body "
+            "style='font-family:sans-serif;padding:40px'>"
+            + ("<h2>✅ 인증 코드를 받았습니다.</h2><p>터미널로 돌아가 연동 결과를 확인하세요. 이 창은 닫아도 됩니다.</p>"
+               if ok else "<h2>❌ 연동이 취소되었거나 실패했습니다.</h2><p>터미널에서 다시 시도해주세요.</p>")
+            + "</body></html>"
+        ).encode("utf-8")
+        self.send_response(200 if ok else 400)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, format, *args):  # silence default stderr logging
+        logger.debug("oauth redirect: " + format % args)
+
+
+def wait_for_oauth_redirect(port: int, timeout: float = 180.0) -> dict:
+    """Serve ``http://localhost:<port>/`` until one redirect arrives (or ``timeout``).
+
+    Returns the query parameters of the redirect (``code``/``state`` or ``error``...),
+    or an empty dict on timeout.
+    """
+    _OAuthRedirectHandler.result = {}
+    server = HTTPServer(("127.0.0.1", port), _OAuthRedirectHandler)
+    server.timeout = 1.0
+    deadline = time.time() + timeout
+    try:
+        while time.time() < deadline and not _OAuthRedirectHandler.result:
+            server.handle_request()
+    finally:
+        server.server_close()
+    return dict(_OAuthRedirectHandler.result)

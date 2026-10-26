@@ -20,6 +20,17 @@ class TrainSearchParams:
     passenger_count: int = 1  # Number of adult passengers (1-9)
     seat_strategy: str = "consecutive"  # "consecutive" or "random"
 
+    def summary_lines(self) -> list[str]:
+        """Human readable description used by the CLI and notifications."""
+        return [
+            f"📅 출발일: {self.dep_date}",
+            f"🚉 구간: {self.src_locate} → {self.dst_locate}",
+            f"🕐 검색 시각: {self.dep_time[:4]} ~ {self.max_dep_time}",
+            f"🚄 열차: {self.train_type_display}",
+            f"💺 좌석: {self.special_option_display}",
+            f"👥 인원: {self.passenger_count}명 ({'연속 좌석' if self.seat_strategy == 'consecutive' else '랜덤 배치'})",
+        ]
+
     def validate(self) -> tuple[bool, Optional[str]]:
         """
         Validate search parameters.
@@ -70,6 +81,32 @@ class PaymentStatus:
     @created_at.setter
     def created_at(self, value: Optional[datetime]) -> None:
         self.reservation_time = value
+
+
+@dataclass
+class ReservationResult:
+    """Last outcome reported by the worker (shown by ``korailbot status``)."""
+    status: str            # "success" | "failed" | "partial" | "cancelled"
+    message: str           # human readable summary (what was sent to KakaoTalk)
+    paid: bool = False
+    reported_at: datetime = field(default_factory=lambda: datetime.now())
+
+    def to_dict(self) -> dict:
+        return {
+            "status": self.status,
+            "message": self.message,
+            "paid": self.paid,
+            "reported_at": self.reported_at.isoformat(),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "ReservationResult":
+        return cls(
+            status=data["status"],
+            message=data.get("message", ""),
+            paid=bool(data.get("paid", False)),
+            reported_at=datetime.fromisoformat(data["reported_at"]) if data.get("reported_at") else datetime.now(),
+        )
 
 
 class ReservationPaymentStatus(Enum):

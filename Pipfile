@@ -4,12 +4,9 @@ verify_ssl = true
 name = "pypi"
 
 [packages]
-flask = "*"
-flask-restful = "*"
 requests = "*"
-flask-cors = "*"
-python-telegram-bot = "*"
 pykorail = "==0.2.2"
+pycryptodome = "*"
 redis = "*"
 hiredis = "*"
 
@@ -17,7 +14,6 @@ hiredis = "*"
 pytest = "*"
 pytest-cov = "*"
 pytest-mock = "*"
-pytest-asyncio = "*"
 freezegun = "*"
 testcontainers = {extras = ["redis"], version = "*"}
 

@@ -278,6 +278,44 @@ class RedisStorage(StorageInterface):
     def delete_kakao_tokens(self, user_id: int) -> None:
         self.redis.delete(f"kakao_tokens:{user_id}")
 
+    # ==================== KakaoTalk chatbot ====================
+
+    def get_paired_users(self) -> List[str]:
+        return sorted(self.redis.smembers("kakao_skill:paired_users"))
+
+    def add_paired_user(self, bot_user_key: str) -> None:
+        self.redis.sadd("kakao_skill:paired_users", bot_user_key)
+
+    def clear_paired_users(self) -> int:
+        count = self.redis.scard("kakao_skill:paired_users")
+        self.redis.delete("kakao_skill:paired_users")
+        return int(count)
+
+    def get_pairing_code(self) -> Optional[str]:
+        return self.redis.get("kakao_skill:pairing_code")
+
+    def set_pairing_code(self, code: Optional[str], ttl_seconds: int = 600) -> None:
+        if code:
+            self.redis.setex("kakao_skill:pairing_code", ttl_seconds, code)
+        else:
+            self.redis.delete("kakao_skill:pairing_code")
+
+    def get_chat_state(self, bot_user_key: str) -> Optional[dict]:
+        data = self.redis.get(f"kakao_skill:chat_state:{bot_user_key}")
+        if not data:
+            return None
+        try:
+            return json.loads(data)
+        except json.JSONDecodeError:
+            return None
+
+    def save_chat_state(self, bot_user_key: str, state: Optional[dict], ttl_seconds: int = 1800) -> None:
+        key = f"kakao_skill:chat_state:{bot_user_key}"
+        if state is None:
+            self.redis.delete(key)
+        else:
+            self.redis.setex(key, ttl_seconds, json.dumps(state, ensure_ascii=False))
+
     # ==================== Saved card (automatic payment) ====================
 
     def get_saved_card(self, user_id: int) -> Optional[CardInfo]:

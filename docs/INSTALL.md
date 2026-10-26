@@ -175,6 +175,96 @@ Windows 방화벽 알림이 뜨면(카카오 연동 시 로컬 포트) "개인 �
 
 ---
 
+## B. 카카오톡 챗봇: 카카오톡에서 예약 조작 (선택)
+
+3단계까지 마치면 알림은 카카오톡으로 오지만 명령은 터미널에서 내려야 합니다. 카카오톡 채널 챗봇을 붙이면 휴대폰에서 `예약`, `상태`, `취소`, `결제완료` 를 보낼 수 있습니다. 필요한 것은 **카카오톡 채널 + 오픈빌더 봇 + 공개 HTTPS 주소** 입니다. 고정 IP는 필수가 아니지만 도메인과 유효한 인증서는 필수입니다(자체 서명 인증서는 거부됨).
+
+### B-1. 스킬 서버 실행
+
+```bash
+echo "KAKAO_SKILL_SECRET=$(openssl rand -hex 16)" >> .env    # 스킬 URL 비밀 경로
+korailbot serve                                               # 127.0.0.1:8090 에서 대기
+```
+
+systemd 로 상시 실행 (Ubuntu):
+
+```bash
+sudo tee /etc/systemd/system/korailbot-skill.service > /dev/null <<UNIT
+[Unit]
+Description=korailbot KakaoTalk skill server
+After=network-online.target redis-server.service
+
+[Service]
+User=$USER
+WorkingDirectory=$HOME/korail_ktx_macro_telegrambot
+ExecStart=$HOME/korail_ktx_macro_telegrambot/.venv/bin/python src/cli.py serve
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+sudo systemctl daemon-reload
+sudo systemctl enable --now korailbot-skill
+curl http://127.0.0.1:8090/healthz        # {"ok":true}
+```
+
+### B-2. 공개 HTTPS 주소 (둘 중 하나)
+
+**Caddy + 도메인** (공유기에서 80/443 포트를 이 PC로 포워딩, DuckDNS 등 무료 DDNS 가능)
+
+```bash
+sudo apt install -y caddy
+sudo tee /etc/caddy/Caddyfile > /dev/null <<'CADDY'
+bot.example.com {
+    reverse_proxy /kakao/* 127.0.0.1:8090
+    reverse_proxy /healthz 127.0.0.1:8090
+}
+CADDY
+sudo systemctl reload caddy
+curl https://bot.example.com/healthz
+```
+Caddy 가 Let's Encrypt 인증서를 자동으로 발급·갱신합니다.
+
+**Cloudflare Tunnel** (포트 개방·고정 IP 불필요, 도메인을 Cloudflare 에 등록)
+
+```bash
+cloudflared tunnel login
+cloudflared tunnel create korailbot
+cloudflared tunnel route dns korailbot bot.example.com
+cloudflared tunnel run --url http://127.0.0.1:8090 korailbot
+```
+
+### B-3. 카카오톡 채널과 오픈빌더 봇
+
+1. **채널 개설**: https://center-pf.kakao.com → 새 채널 만들기. 개인도 가능하며 비즈니스 인증은 필요 없습니다. 본인만 쓸 것이므로 검색 허용은 꺼도 됩니다.
+2. **봇 만들기**: https://chatbot.kakao.com (카카오 i 오픈빌더) → 봇 만들기 → "카카오톡 챗봇". 계정에 따라 오픈빌더 사용 신청 후 승인 메일을 기다려야 할 수 있습니다.
+3. **채널 연결**: 봇 → 설정 → 카카오톡 채널 연결에서 1번 채널 선택. 개인 계정으로 막히면 챗봇 관리자센터 고객센터에 개인 사용 가능 여부를 문의하세요.
+4. **스킬 등록**: 봇 → 스킬 → 생성 → URL 에 `https://bot.example.com/kakao/skill/<KAKAO_SKILL_SECRET>` 입력 → 저장 → "스킬 테스트" 로 응답 확인(등록 안내 메시지가 오면 정상).
+5. **폴백 블록 연결**: 시나리오 → 폴백 블록 → 봇 응답에서 **스킬데이터 사용** 선택, 4번 스킬 지정 → 저장. (웰컴 블록에도 같은 스킬을 걸면 채널 추가 시 안내가 나갑니다.)
+6. **배포**: 우측 상단 **배포**.
+
+### B-4. 본인 등록과 사용
+
+```bash
+korailbot kakao pair          # 10분 유효한 6자리 코드 출력
+```
+
+카카오톡에서 내 채널을 친구 추가하고 `등록 123456` 을 보냅니다. "등록되었습니다"가 오면 그 카카오 사용자만 봇을 조작할 수 있습니다. 이후:
+
+```
+예약                               → 출발일부터 하나씩 물어봄 (버튼으로 선택 가능)
+예약 20261225 서울 부산 0900 1200    → 한 줄로 시작
+상태 / 취소 / 결제완료 / 카드 / 도움말
+연동                               → 예약 알림을 '나와의 채팅'으로 받기 (링크 클릭)
+```
+
+`연동` 링크가 휴대폰에서 바로 완료되게 하려면 `.env` 의 `KAKAO_REDIRECT_URI=https://bot.example.com/kakao/oauth` 로 바꾸고 Kakao Developers 의 Redirect URI 에도 같은 주소를 추가한 뒤 `korailbot-skill` 을 재시작하세요. 그대로 두면 리다이렉트가 `localhost` 라 페이지는 열리지 않지만, 주소창의 `code=` 값을 `코드 <값>` 으로 보내면 연동됩니다.
+
+> 보안상 코레일 비밀번호와 카드 정보는 카카오톡으로 받지 않습니다. `korailbot login`, `korailbot card set` 은 서버에서 실행하세요. 스킬 URL 은 비밀 경로를 포함하고, 등록되지 않은 사용자의 메시지는 모두 거부됩니다.
+
+---
+
 ## 4. 첫 예약 검색
 
 ```bash
@@ -242,6 +332,8 @@ Docker와 `testcontainers` 가 있으면 테스트용 Redis 컨테이너를 자�
 | `start` 후 아무 알림이 없음 | 매진이면 자리가 날 때까지 조회만 계속합니다. `korailbot logs -f` 로 조회 로그 확인, `korailbot status` 로 워커 생존 확인 |
 | 카카오 `kakao link` 가 응답을 못 받음 | Redirect URI가 `http://localhost:8080/kakao/oauth` 로 정확히 등록됐는지, 8080 포트를 다른 프로그램이 쓰고 있지 않은지(`KAKAO_LOCAL_PORT` 변경) 확인. 수동으로 `--code` 전달 가능 |
 | 카카오 `insufficient scopes (-402)` | 동의항목에서 `talk_message` 가 꺼져 있음. 켠 뒤 `korailbot kakao unlink` → `kakao link` 재연동 |
+| 챗봇이 "등록되지 않은 사용자" 라고 답함 | `korailbot kakao pair` 로 코드를 만들어 `등록 <코드>` 전송. 코드는 10분 유효, 1회용 |
+| 오픈빌더 스킬 테스트 실패 / 응답 없음 | `curl https://<도메인>/healthz` 로 공개 주소 확인, `KAKAO_SKILL_SECRET` 경로 일치 확인, `systemctl status korailbot-skill`. 응답은 5초 안에 와야 하므로 Redis 와 같은 기기에서 실행 |
 | `Cannot decrypt saved_card` / 계정 복호화 실패 | `CARD_ENCRYPTION_KEY` 가 바뀌었거나 `~/.korail_bot/secret.key` 가 삭제됨. `korailbot login`, `korailbot card set` 으로 재등록 |
 | Windows: `Activate.ps1` 실행 불가 | `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` |
 | Windows: 워커가 바로 종료 | `korailbot logs` 로 오류 확인. Redis가 `localhost:6379`에서 응답하는지 확인 |

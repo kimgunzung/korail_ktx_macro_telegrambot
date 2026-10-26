@@ -11,7 +11,8 @@ Commands:
   paid                직접 결제 완료를 알림 (리마인더 중단 / 다음 좌석 진행)
   logs                워커 로그 보기
   card                자동 결제 카드 확인 / 등록 / 삭제
-  kakao               카카오톡 '나에게 보내기' 연동 관리
+  kakao               카카오톡 '나에게 보내기' 연동 / 챗봇 사용자 등록(pair)
+  serve               카카오톡 챗봇(오픈빌더 스킬) 서버 실행
   stations            역 이름 검색
 """
 import argparse
@@ -226,48 +227,9 @@ def cmd_start(args) -> int:
 def cmd_status(args) -> int:
     storage = _storage()
     reservation_service, kakao = _services(storage)
-
-    running = reservation_service.running()
-    if running:
-        elapsed = datetime.now() - running.started_at
-        say(f"🔍 예약 검색 진행 중 (pid={running.process_id}, {int(elapsed.total_seconds() // 60)}분 경과)")
-        for line in running.search_params.summary_lines():
-            say("   " + line)
-        say(f"   👤 계정: {running.korail_id}")
-        seat = storage.get_current_seat_index(USER_ID)
-        if seat is not None:
-            say(f"   💳 {seat + 1}번째 좌석 결제 대기 중 → 결제 후 `korailbot paid`")
-    else:
-        say("ℹ️ 진행 중인 예약 검색이 없습니다.")
-
-    last = storage.get_last_result(USER_ID)
-    if last:
-        label = {"success": "✅ 성공", "failed": "❌ 실패", "partial": "⏳ 진행", "cancelled": "🚫 취소"}.get(last.status, last.status)
-        say(f"\n마지막 결과 ({last.reported_at.strftime('%Y-%m-%d %H:%M:%S')}): {label}"
-            + (" · 결제 완료" if last.paid else ""))
-        say("   " + last.message.strip().replace("\n", "\n   "))
-
-    payment = storage.get_payment_status(USER_ID)
-    if payment and payment.reminder_active and not payment.completed:
-        say("\n⏰ 결제 리마인더 동작 중 — 결제 후 `korailbot paid` 를 실행하세요.")
-
-    multi = storage.get_multi_reservation_status(USER_ID)
-    if multi and multi.reservations:
-        say("\n🪑 랜덤 배치 좌석 현황")
-        for r in sorted(multi.reservations, key=lambda x: x.seat_number):
-            state = {"pending": f"⏳ 결제 대기 (남은 시간 {r.get_remaining_minutes_display()})",
-                     "paid": "✅ 결제 완료", "expired": "❌ 만료", "cancelled": "🚫 취소"}[r.status.value]
-            say(f"   좌석 {r.seat_number}: {state}")
-
-    credentials = storage.get_credentials(USER_ID)
-    card = storage.get_saved_card(USER_ID)
-    say("")
-    say(f"👤 계정: {credentials.korail_id if credentials else '없음 (korailbot login)'}")
-    say(f"💳 카드: {card.masked if card and card.is_complete else '없음 (korailbot card set)'}")
-    if kakao.enabled:
-        say(f"📣 카카오톡: {'연동됨 (' + kakao.link_summary(USER_ID) + ')' if kakao.is_linked(USER_ID) else '미연동 (korailbot kakao link)'}")
-    else:
-        say("📣 카카오톡: 서버 미설정 (KAKAO_REST_API_KEY)")
+    from services.status_view import status_lines
+    for line in status_lines(storage, reservation_service, kakao, USER_ID):
+        say(line)
     return 0
 
 
@@ -381,10 +343,10 @@ def cmd_kakao(args) -> int:
     _, kakao = _services(storage)
     from services.kakao_service import KakaoError, wait_for_oauth_redirect
 
-    if not kakao.enabled:
+    action = args.action
+    if action not in ("pair", "unpair") and not kakao.enabled:
         fail("카카오톡 연동이 설정되어 있지 않습니다. .env 에 KAKAO_REST_API_KEY 를 설정하세요. (docs/INSTALL.md 참고)")
 
-    action = args.action
     if action == "status":
         linked = kakao.link_summary(USER_ID)
         say(f"📣 카카오톡: {'연동됨 (연동일 ' + linked + ')' if linked else '미연동'}")
@@ -393,6 +355,20 @@ def cmd_kakao(args) -> int:
 
     if action == "unlink":
         say("✅ 카카오톡 연동을 해제했습니다." if kakao.unlink(USER_ID) else "ℹ️ 연동되어 있지 않습니다.")
+        return 0
+
+    if action == "pair":
+        from kakao_skill.bot import create_pairing_code, PAIRING_TTL_SECONDS
+        code = create_pairing_code(storage)
+        say("💬 카카오톡 채널 챗봇에서 아래 문장을 보내면 이 봇의 사용자로 등록됩니다. "
+            f"({PAIRING_TTL_SECONDS // 60}분 안에)")
+        say(f"\n    등록 {code}\n")
+        say("등록된 사용자만 챗봇으로 예약을 조작할 수 있습니다. 해제: korailbot kakao unpair")
+        return 0
+
+    if action == "unpair":
+        from kakao_skill.bot import clear_paired_users
+        say(f"✅ 챗봇 등록 사용자 {clear_paired_users(storage)}명을 해제했습니다.")
         return 0
 
     if action == "test":
@@ -436,6 +412,26 @@ def cmd_kakao(args) -> int:
     except KakaoError as e:
         fail(f"카카오톡 연동 실패: {e}")
     say("✅ 카카오톡 연동 완료! '나와의 채팅'에서 확인 메시지를 확인하세요.")
+    return 0
+
+
+# ------------------------------------------------------------------ serve
+
+def cmd_serve(args) -> int:
+    """Run the KakaoTalk chatbot (Open Builder skill) HTTP server in the foreground."""
+    storage = _storage()
+    from kakao_skill.server import serve_forever
+    host = args.host or settings.KAKAO_SKILL_HOST
+    port = args.port or settings.KAKAO_SKILL_PORT
+    say(f"🚀 카카오톡 챗봇 스킬 서버 시작: http://{host}:{port}{settings.kakao_skill_path()}")
+    say("   오픈빌더 스킬 URL에는 이 서버 앞의 공개 HTTPS 주소를 등록하세요. (docs/INSTALL.md 'B' 참고)")
+    if not storage.get_paired_users() and not settings.KAKAO_SKILL_ALLOWED_USERS:
+        say("   아직 등록된 챗봇 사용자가 없습니다: `korailbot kakao pair` 로 코드를 만들고 채널에서 '등록 <코드>'를 보내세요.")
+    say("   종료: Ctrl+C")
+    try:
+        serve_forever(host, port, storage)
+    except KeyboardInterrupt:
+        say("\n서버를 종료했습니다.")
     return 0
 
 
@@ -511,10 +507,16 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_card)
 
     p = sub.add_parser("kakao", help="카카오톡 알림 연동 관리")
-    p.add_argument("action", choices=["link", "status", "test", "unlink"])
+    p.add_argument("action", choices=["link", "status", "test", "unlink", "pair", "unpair"],
+                   help="link/status/test/unlink: 알림 연동, pair/unpair: 챗봇 사용자 등록")
     p.add_argument("--code", help="link: 브라우저 주소창의 code= 값을 직접 전달")
     p.add_argument("--no-browser", action="store_true", help="link: 브라우저를 자동으로 열지 않음")
     p.set_defaults(func=cmd_kakao)
+
+    p = sub.add_parser("serve", help="카카오톡 챗봇(오픈빌더 스킬) 서버 실행")
+    p.add_argument("--host", help=f"바인드 주소 (기본 {settings.KAKAO_SKILL_HOST})")
+    p.add_argument("--port", type=int, help=f"포트 (기본 {settings.KAKAO_SKILL_PORT})")
+    p.set_defaults(func=cmd_serve)
 
     p = sub.add_parser("stations", help="역 이름 목록/검색")
     p.add_argument("query", nargs="?", help="검색어 (예: 광주)")

@@ -92,6 +92,18 @@ class Settings:
     KAKAO_API_BASE_URL: str = "https://kapi.kakao.com"
     KAKAO_MEMO_TEXT_LIMIT: int = 200  # Kakao text template hard limit
 
+    # KakaoTalk chatbot (Kakao i Open Builder skill server, `korailbot serve`).
+    KAKAO_SKILL_HOST: str = os.environ.get('KAKAO_SKILL_HOST', '127.0.0.1')
+    KAKAO_SKILL_PORT: int = int(os.environ.get('KAKAO_SKILL_PORT', '8090'))
+    # Optional secret path segment so random scanners cannot reach the skill endpoint:
+    # the skill URL becomes https://<host>/kakao/skill/<secret>
+    KAKAO_SKILL_SECRET: str = os.environ.get('KAKAO_SKILL_SECRET', '').strip()
+    # Open Builder user ids (botUserKey) allowed to control the bot, besides those paired
+    # with `korailbot kakao pair`. Comma separated.
+    KAKAO_SKILL_ALLOWED_USERS: list[str] = [
+        u.strip() for u in os.environ.get('KAKAO_SKILL_ALLOWED_USERS', '').split(',') if u.strip()
+    ]
+
     # Logging Configuration
     LOG_LEVEL: str = os.environ.get('LOG_LEVEL', 'INFO')
     LOG_FORMAT: str = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
@@ -119,6 +131,10 @@ class Settings:
     def kakao_enabled(self) -> bool:
         """True when the KakaoTalk integration is configured."""
         return bool(self.KAKAO_REST_API_KEY and self.KAKAO_REDIRECT_URI)
+
+    def kakao_skill_path(self) -> str:
+        """URL path of the Open Builder skill endpoint."""
+        return f"/kakao/skill/{self.KAKAO_SKILL_SECRET}" if self.KAKAO_SKILL_SECRET else "/kakao/skill"
 
 
 # Singleton instance

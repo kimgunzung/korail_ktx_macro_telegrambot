@@ -20,14 +20,22 @@ class TrainSearchParams:
     passenger_count: int = 1  # Number of adult passengers (1-9)
     seat_strategy: str = "consecutive"  # "consecutive" or "random"
 
+    SEAT_LABELS = {
+        "GENERAL_FIRST": "일반실 우선", "GENERAL_ONLY": "일반실만",
+        "SPECIAL_FIRST": "특실 우선", "SPECIAL_ONLY": "특실만",
+    }
+    TRAIN_LABELS = {"KTX": "KTX", "ALL": "모든 열차"}
+
     def summary_lines(self) -> list[str]:
-        """Human readable description used by the CLI and notifications."""
+        """Human readable description used by the CLI, the chatbot and notifications."""
+        seat = self.SEAT_LABELS.get(self.special_option_display, self.special_option_display)
+        train = self.TRAIN_LABELS.get(self.train_type_display, self.train_type_display)
         return [
             f"📅 출발일: {self.dep_date}",
             f"🚉 구간: {self.src_locate} → {self.dst_locate}",
             f"🕐 검색 시각: {self.dep_time[:4]} ~ {self.max_dep_time}",
-            f"🚄 열차: {self.train_type_display}",
-            f"💺 좌석: {self.special_option_display}",
+            f"🚄 열차: {train}",
+            f"💺 좌석: {seat}",
             f"👥 인원: {self.passenger_count}명 ({'연속 좌석' if self.seat_strategy == 'consecutive' else '랜덤 배치'})",
         ]
 

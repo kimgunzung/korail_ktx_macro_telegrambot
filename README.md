@@ -49,6 +49,8 @@ CLI와 워커는 Redis로 상태를 공유합니다. 계정과 카드 정보는 
 | `logs [-n N] [-f]` | 최신 워커 로그 출력 (`-f` 실시간) |
 | `card show / set / delete` | 자동 결제 카드 확인 / 등록·교체 / 삭제 |
 | `kakao link / status / test / unlink` | 카카오톡 알림 연동 관리 |
+| `kakao pair / unpair` | 카카오톡 챗봇 사용자 등록 코드 발급 / 전체 해제 |
+| `serve [--host H] [--port P]` | 카카오톡 챗봇(오픈빌더 스킬) 서버 실행 |
 | `stations [검색어]` | 역 이름 목록/검색 |
 
 ### `start` 옵션
@@ -89,6 +91,22 @@ korailbot start --date 20261225 --from 광명 --to 동대구 --time 1700 --passe
 - 카드와 코레일 계정은 Redis에 **AES-256-GCM 암호화**로 저장됩니다. 키는 `CARD_ENCRYPTION_KEY` 환경변수를 쓰고, 없으면 `~/.korail_bot/secret.key`에 무작위 키를 한 번 생성해 보관합니다(권한 600). 이 파일을 지우거나 키를 바꾸면 저장 정보가 복호화되지 않아 다시 등록해야 합니다.
 - 워커에는 환경변수로 전달되며 argv(`ps`)에 노출되지 않습니다. 입력은 화면에 표시되지 않고(getpass), 로그와 알림에는 뒤 4자리(`****1234`)만 남습니다.
 
+## 카카오톡 챗봇 (카카오톡에서 예약 조작)
+
+카카오톡 채널 챗봇으로 휴대폰에서 예약을 시작·조회·취소할 수 있습니다. `korailbot serve` 가 카카오 i 오픈빌더의 **스킬 서버**로 동작하며, 채널에 보낸 말을 받아 답합니다.
+
+```
+예약                              # 조건을 하나씩 물어보는 안내 (출발일 → 출발역 → … → 확인)
+예약 20261225 서울 부산 0900 1200   # 한 줄로 시작
+상태 / 취소 / 결제완료 / 카드 / 연동 / 처음부터 / 도움말
+```
+
+- **본인만 사용**: 처음 한 번 서버에서 `korailbot kakao pair` 로 코드를 만들고, 채널에 `등록 123456` 을 보내면 그 카카오 사용자만 봇을 조작할 수 있습니다 (`KAKAO_SKILL_ALLOWED_USERS` 로 고정도 가능). 등록되지 않은 사용자의 메시지는 거부됩니다.
+- **보안**: 코레일 비밀번호와 카드번호는 카카오톡으로 입력받지 않습니다(채팅 내용은 카카오 서버에 남습니다). 계정·카드 등록은 서버에서 `korailbot login`, `korailbot card set` 으로만 합니다.
+- **알림**: 예약 결과는 '나에게 보내기'(아래 알림 연동)로 옵니다. 챗봇에서 `연동` 을 보내면 연동 링크를 줍니다. 스킬 서버가 공개 주소를 갖고 있으므로 `KAKAO_REDIRECT_URI=https://<공개주소>/kakao/oauth` 로 두면 링크만 눌러도 연동이 끝납니다.
+- **필요한 것**: 카카오톡 채널 + 오픈빌더 봇 + 공개 HTTPS 주소(도메인 + 인증서 또는 Cloudflare Tunnel). 설정 절차는 [docs/INSTALL.md 'B. 카카오톡 챗봇'](docs/INSTALL.md) 참고.
+- **운영**: `korailbot serve` 는 `127.0.0.1:8090` 에서 HTTP로 듣습니다. 앞에 Caddy/nginx 로 HTTPS 를 붙이고 스킬 URL 을 `https://<도메인>/kakao/skill/<KAKAO_SKILL_SECRET>` 로 등록하세요. 오픈빌더는 5초 안에 응답을 요구하므로 서버와 Redis 는 같은 기기에 두는 것이 좋습니다.
+
 ## 카카오톡 알림
 
 카카오 "나에게 보내기" API(`talk_message` 권한)를 사용해 예약 성공/실패, 결제 리마인더, 오류를 카카오톡 "나와의 채팅"으로 보냅니다. 카카오톡 채널이나 알림톡 비용은 없습니다.
@@ -118,6 +136,9 @@ korailbot start --date 20261225 --from 광명 --to 동대구 --time 1700 --passe
 | `KAKAO_CLIENT_SECRET` | | 카카오 앱에서 Client Secret을 켠 경우 |
 | `KAKAO_LOCAL_PORT` | `8080` | `kakao link` 가 인증 응답을 받을 로컬 포트 |
 | `KAKAO_REDIRECT_URI` | `http://localhost:8080/kakao/oauth` | Kakao Developers에 등록한 Redirect URI |
+| `KAKAO_SKILL_HOST` / `KAKAO_SKILL_PORT` | `127.0.0.1` / `8090` | 챗봇 스킬 서버 바인드 주소 |
+| `KAKAO_SKILL_SECRET` | | 스킬 URL 비밀 경로 (`/kakao/skill/<secret>`), `openssl rand -hex 16` |
+| `KAKAO_SKILL_ALLOWED_USERS` | | `kakao pair` 대신 허용할 오픈빌더 사용자 id(botUserKey) 목록 |
 | `KORAIL_BOT_DATA_DIR` | `~/.korail_bot` | 워커 로그(`logs/`)와 `secret.key` 위치 |
 | `LOG_LEVEL` | `INFO` | `DEBUG`로 올리면 조회 로그가 상세해집니다 |
 
@@ -133,6 +154,7 @@ python -m pytest tests -q           # Docker가 있으면 테스트용 Redis 컨
 ```
 src/
 ├── cli.py                  # korailbot 명령줄 진입점
+├── kakao_skill/            # 카카오톡 챗봇: server.py(HTTP), bot.py(명령·예약 안내), responses.py
 ├── config/settings.py      # 환경변수 / .env
 ├── models/                 # TrainSearchParams, CardInfo, KakaoTokens ...
 ├── services/

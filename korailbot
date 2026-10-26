@@ -1,16 +1,31 @@
 #!/usr/bin/env bash
 # Wrapper: run the korailbot CLI with the project's virtualenv when present.
+# Works when invoked directly, through a symlink (e.g. /usr/local/bin/korailbot) or inside
+# the Docker image (/app).
 set -e
-DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SELF="${BASH_SOURCE[0]}"
+if command -v readlink >/dev/null 2>&1; then
+  RESOLVED="$(readlink -f "$SELF" 2>/dev/null || true)"
+  [ -n "$RESOLVED" ] && SELF="$RESOLVED"
+fi
+DIR="$(cd "$(dirname "$SELF")" && pwd)"
+
+if [ -f "$DIR/src/cli.py" ]; then
+  CLI="$DIR/src/cli.py"
+elif [ -f /app/src/cli.py ]; then
+  CLI=/app/src/cli.py
+else
+  echo "korailbot: cannot find src/cli.py next to $SELF (clone the repository and run ./korailbot from it)" >&2
+  exit 1
+fi
+
 if [ -x "$DIR/.venv/bin/python" ]; then
   PY="$DIR/.venv/bin/python"
-elif [ -x "/app/src/cli.py" ] || [ -n "$PYTHONPATH" ]; then
-  PY="python"
+elif [ -n "$VIRTUAL_ENV" ] && [ -x "$VIRTUAL_ENV/bin/python" ]; then
+  PY="$VIRTUAL_ENV/bin/python"
+elif command -v python3.12 >/dev/null 2>&1; then
+  PY=python3.12
 else
   PY="${PYTHON:-python3}"
 fi
-if [ -f "$DIR/src/cli.py" ]; then
-  exec "$PY" "$DIR/src/cli.py" "$@"
-else
-  exec "$PY" /app/src/cli.py "$@"
-fi
+exec "$PY" "$CLI" "$@"

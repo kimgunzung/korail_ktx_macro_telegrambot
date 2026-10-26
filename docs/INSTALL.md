@@ -194,28 +194,34 @@ Windows 방화벽 알림이 뜨면(카카오 연동 시 로컬 포트) "개인 �
 ```bash
 korailbot telegram
 ```
-"봇: @이름 — 텔레그램에서 이 봇에게 메시지를 보내세요." 가 나오면 정상입니다. 상시 실행은 systemd 로:
+"봇: @이름 — 텔레그램에서 이 봇에게 메시지를 보내세요." 가 나오면 정상입니다. 이 명령은 포그라운드에서 계속 돌므로 터미널을 닫으면 봇도 꺼집니다. 상시 실행은 **사용자 systemd 서비스**로 등록합니다 (`sudo`는 linger 한 줄에만 필요).
 
 ```bash
-sudo tee /etc/systemd/system/korailbot-telegram.service > /dev/null <<UNIT
+mkdir -p ~/.config/systemd/user
+tee ~/.config/systemd/user/korailbot-telegram.service > /dev/null <<'UNIT'
 [Unit]
-Description=korailbot Telegram bot
-After=network-online.target redis-server.service
+Description=Korail KTX bot (Telegram)
+After=network-online.target
 
 [Service]
-User=$USER
-WorkingDirectory=$HOME/korail_ktx_macro_telegrambot
-ExecStart=$HOME/korail_ktx_macro_telegrambot/.venv/bin/python src/cli.py telegram
+WorkingDirectory=%h/korail_ktx_macro_telegrambot
+ExecStart=%h/korail_ktx_macro_telegrambot/korailbot telegram
 Restart=always
 RestartSec=5
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=default.target
 UNIT
-sudo systemctl daemon-reload
-sudo systemctl enable --now korailbot-telegram
-systemctl status korailbot-telegram --no-pager
+systemctl --user daemon-reload
+systemctl --user enable --now korailbot-telegram
+sudo loginctl enable-linger "$USER"      # 로그아웃·재부팅 후에도 유지
+systemctl --user status korailbot-telegram --no-pager
+journalctl --user -u korailbot-telegram -f   # 로그
 ```
+
+`%h` 는 홈 디렉터리입니다. 다른 곳에 클론했다면 두 경로를 맞추세요. 등록 후에는 터미널에서 직접 띄운 `korailbot telegram` 을 Ctrl+C 로 끕니다(같은 토큰으로 폴링은 하나만 가능).
+
+서버를 처음부터 다시 구축하는 전체 순서는 **[docs/RUNBOOK.md](RUNBOOK.md)** 에 있습니다.
 
 Windows 에서는 작업 스케줄러에 "로그온 시" 트리거로 `.venv\Scripts\python.exe src\cli.py telegram` 을 등록합니다.
 
@@ -311,7 +317,7 @@ Docker와 `testcontainers` 가 있으면 테스트용 Redis 컨테이너를 자�
 | 카카오 `insufficient scopes (-402)` | 동의항목에서 `talk_message` 가 꺼져 있음. 켠 뒤 `korailbot kakao unlink` → `kakao link` 재연동 |
 | 텔레그램 봇이 "등록되지 않은 사용자" 라고 답함 | `korailbot pair` 로 코드를 만들어 `등록 <코드>` 전송. 코드는 10분 유효, 1회용 |
 | `korailbot telegram` 이 "토큰 확인 실패" | `.env` 의 `TELEGRAM_BOT_TOKEN` 오타 확인(BotFather 토큰 전체). 프록시/방화벽이 api.telegram.org 를 막는지 확인 |
-| 텔레그램에서 답이 없음 | `systemctl status korailbot-telegram` 로 봇이 떠 있는지, 봇 인스턴스가 두 개 이상 돌지 않는지(같은 토큰으로 폴링은 하나만 가능) 확인 |
+| 텔레그램에서 답이 없음 | `systemctl --user status korailbot-telegram` 로 봇이 떠 있는지, 봇 인스턴스가 두 개 이상 돌지 않는지(같은 토큰으로 폴링은 하나만 가능) 확인 |
 | `Cannot decrypt saved_card` / 계정 복호화 실패 | `CARD_ENCRYPTION_KEY` 가 바뀌었거나 `~/.korail_bot/secret.key` 가 삭제됨. `korailbot login`, `korailbot card set` 으로 재등록 |
 | Windows: `Activate.ps1` 실행 불가 | `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` |
 | Windows: 워커가 바로 종료 | `korailbot logs` 로 오류 확인. Redis가 `localhost:6379`에서 응답하는지 확인 |

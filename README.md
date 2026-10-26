@@ -12,7 +12,7 @@ korailbot status                                 # 진행 상황 / 마지막 결
 korailbot cancel                                 # 검색 중단
 ```
 
-> 설치부터 첫 예약까지의 단계별 안내(Ubuntu / Windows)는 **[docs/INSTALL.md](docs/INSTALL.md)** 를 보세요.
+> 설치부터 첫 예약까지의 단계별 안내(Ubuntu / Windows)는 **[docs/INSTALL.md](docs/INSTALL.md)**, 새 서버에 처음부터 다시 구축하는 체크리스트는 **[docs/RUNBOOK.md](docs/RUNBOOK.md)** 를 보세요.
 
 ## 동작 방식
 

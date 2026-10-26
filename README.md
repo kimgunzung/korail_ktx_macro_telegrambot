@@ -25,7 +25,8 @@ CLI와 워커는 Redis로 상태를 공유합니다. 계정과 카드 정보는 
 
 ## 참고
 
-- 코레일 API 클라이언트로 [devgyurak/pykorail](https://github.com/devgyurak/pykorail)을 사용합니다 (코레일+ 7.0.8 규격, Python 3.10+).
+- 코레일 API 클라이언트로 [devgyurak/pykorail](https://github.com/devgyurak/pykorail) **0.5.1** 을 사용합니다 (코레일+ 7.0.10 / DynaPath v2 규격, Python 3.11+). 코레일은 2026-10-21 앱 보안 모듈을 v2로 바꿔 그 이전 버전(0.2.x~0.4.x)은 로그인·조회가 `-8204 앱 업데이트 필요` 로 거부됩니다. 이 오류가 보이면 `git pull` 후 `pip install -r requirements.txt` 로 갱신하세요.
+- 2026-09 KTX·SRT 통합(코레일+) 이후에도 pykorail 은 코레일 열차만 조회합니다(앱의 "SRT 함께 보기" 옵션은 꺼진 채 요청). SRT 열차 조회·예매는 아직 지원하지 않습니다.
 - 과거에 사용했던 [carpedm20/korail2](https://github.com/carpedm20/korail2) 계열은 2026-09 코레일+ 앱 업데이트 이후 `-2000 이용 제한` 응답을 받아 동작하지 않습니다.
 - 코레일은 AWS 등 데이터센터·VPN IP를 차단(`-8202`)하고, 매크로로 판정한 공인 IP도 차단합니다. **가정용 회선에서 실행하세요.** 한 번 차단된 IP는 코드를 고쳐도 풀리지 않으며 공인 IP가 바뀌어야 합니다.
 - DynaPath 기기 식별자는 `KORAIL_DEVICE_FILE`(기본 `~/.korail_bot_device.json`)에 저장되어 모든 프로세스가 같은 기기로 보이게 합니다. 고정하려면 `KORAIL_DEVICE_PROFILE_ID`/`KORAIL_ANDROID_ID`를 환경변수로 지정하세요.
@@ -43,6 +44,8 @@ CLI와 워커는 Redis로 상태를 공유합니다. 계정과 카드 정보는 
 | `login [--id ID] [--password PW]` | 코레일 로그인을 확인하고 계정을 암호화 저장. 생략하면 입력 요청 |
 | `logout` | 저장된 계정 삭제 |
 | `start --date YYYYMMDD --from 역 --to 역 --time HHMM [옵션]` | 예약 검색 시작 (아래 옵션 참고) |
+| `search --date YYYYMMDD --from 역 --to 역 [--time HHMM] [--until HHMM] [--train ktx\|all]` | **조회 결과 표시**: 열차 시간표와 일반실/특실/예약대기 좌석 현황 (로그인·예약 없음) |
+| `reservations` | **예약 결과 표시**: 코레일에 잡혀 있는 결제 전 예약 목록 (예약번호, 좌석, 금액, 결제기한) |
 | `status` | 진행 중인 검색, 마지막 결과, 결제 대기, 계정/카드/카카오 설정 상태 |
 | `cancel` | 진행 중인 검색 중단 |
 | `paid` | 직접 결제를 완료했음을 알림: 리마인더 중단, 랜덤 배치에서는 다음 좌석 검색 진행 |
@@ -98,7 +101,9 @@ korailbot start --date 20261225 --from 광명 --to 동대구 --time 1700 --passe
 ```
 예약                              # 조건을 하나씩 물어보는 안내 (출발일 → 출발역 → … → 확인), 버튼 제공
 예약 20261225 서울 부산 0900 1200   # 한 줄로 시작
-상태 / 취소 / 결제완료 / 카드 / 처음부터 / 도움말     (또는 /status /cancel /paid /card /reset /help)
+조회 20261225 서울 부산 0900 1200   # 시간표와 좌석 현황만 확인 (예약 안 함)
+예약목록                           # 코레일에 잡혀 있는 결제 전 예약 확인
+상태 / 취소 / 결제완료 / 카드 / 처음부터 / 도움말     (또는 /status /cancel /paid /card /reset /help /search /reservations)
 ```
 
 1. 텔레그램에서 `@BotFather` → `/newbot` → 토큰을 `.env` 의 `TELEGRAM_BOT_TOKEN` 에 넣습니다.

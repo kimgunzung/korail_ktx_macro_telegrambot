@@ -443,6 +443,82 @@ def cmd_telegram(args) -> int:
     return 0
 
 
+# ------------------------------------------------------------ search / list
+
+def _validate_route(date: str, src: str, dst: str, time_: str, until: str) -> None:
+    ok, error = InputValidator.validate_date(date)
+    if not ok:
+        fail(f"--date: {error}")
+    for label, station in (("--from", src), ("--to", dst)):
+        ok, error = InputValidator.validate_station_name(station)
+        if not ok:
+            fail(f"{label}: {error}")
+    if src == dst:
+        fail("출발역과 도착역이 같습니다.")
+    ok, error = InputValidator.validate_time(time_)
+    if not ok:
+        fail(f"--time: {error}")
+    if until != "2400":
+        ok, error = InputValidator.validate_time(until)
+        if not ok:
+            fail(f"--until: {error}")
+        if until < time_:
+            fail(f"--until({until})이 --time({time_})보다 빠릅니다.")
+
+
+def cmd_search(args) -> int:
+    """Show the Korail timetable with seat availability (no login, no reservation)."""
+    _validate_route(args.date, args.src, args.dst, args.time, args.until)
+    from services import KorailService, KorailAccessRestrictedError
+    from services.train_view import train_lines
+    from services.korail_service import TrainType
+    train_type, train_display = TRAIN_CHOICES[args.train]
+    train_type = getattr(TrainType, train_type.split(".")[-1])  # "TrainType.KTX" -> "100"
+    korail = KorailService()
+    say(f"🔍 코레일 조회 중: {args.src}→{args.dst} {args.date} {args.time[:2]}:{args.time[2:]}~"
+        f"{'' if args.until == '2400' else args.until[:2] + ':' + args.until[2:]} ({train_display}, 어른 {args.passengers}명)")
+    try:
+        trains = korail.search_timetable(
+            args.date, args.src, args.dst, dep_time=args.time + "00", train_type=train_type,
+            passenger_count=args.passengers,
+        )
+    except ValueError as e:
+        fail(str(e))
+    except KorailAccessRestrictedError as e:
+        fail(f"코레일 이용 제한: {e}\n가정용 회선에서 실행 중인지, SEARCH_INTERVAL 을 줄이지 않았는지 확인하세요.")
+    except Exception as e:
+        fail(f"코레일 조회 실패: {type(e).__name__}: {e}")
+    trains = korail.filter_until(trains, args.until)
+    for line in train_lines(trains):
+        say(line)
+    return 0
+
+
+def cmd_reservations(args) -> int:
+    """List unpaid reservations held at Korail for the saved account."""
+    storage = _storage()
+    creds = storage.get_credentials(USER_ID)
+    if not creds:
+        fail("저장된 코레일 계정이 없습니다. 먼저 `korailbot login` 을 실행하세요.")
+    from services import KorailService, KorailAccessRestrictedError
+    from services.train_view import reservation_lines
+    korail = KorailService()
+    say("코레일 로그인 중...")
+    if not korail.login(creds.korail_id, creds.korail_pw):
+        fail(f"코레일 로그인 실패: {korail.last_login_error or '알 수 없음'}")
+    try:
+        reservations = korail.list_reservations()
+    except ValueError as e:
+        fail(str(e))
+    except KorailAccessRestrictedError as e:
+        fail(f"코레일 이용 제한: {e}")
+    except Exception as e:
+        fail(f"예약 조회 실패: {type(e).__name__}: {e}")
+    for line in reservation_lines(reservations, header="🎫 코레일 예약 (결제 전)"):
+        say(line)
+    return 0
+
+
 # --------------------------------------------------------------- stations
 
 def cmd_stations(args) -> int:
@@ -528,6 +604,19 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("unpair", help="등록된 텔레그램 채팅 전체 해제")
     p.set_defaults(func=cmd_unpair)
+
+    p = sub.add_parser("search", help="열차 조회 결과 표시 (좌석 현황, 로그인·예약 없음)")
+    p.add_argument("--date", required=True, help="출발일 YYYYMMDD")
+    p.add_argument("--from", dest="src", required=True, help="출발역 (예: 서울)")
+    p.add_argument("--to", dest="dst", required=True, help="도착역 (예: 부산)")
+    p.add_argument("--time", default="0000", help="조회 시작 시각 HHMM (기본 0000)")
+    p.add_argument("--until", default="2400", help="조회 종료 시각 HHMM (기본 2400)")
+    p.add_argument("--train", choices=sorted(TRAIN_CHOICES), default="ktx", help="열차 종류 (기본 ktx)")
+    p.add_argument("--passengers", type=int, default=1, help="성인 인원 (기본 1)")
+    p.set_defaults(func=cmd_search)
+
+    p = sub.add_parser("reservations", help="코레일에 잡혀 있는 예약(결제 전) 목록 표시")
+    p.set_defaults(func=cmd_reservations)
 
     p = sub.add_parser("stations", help="역 이름 목록/검색")
     p.add_argument("query", nargs="?", help="검색어 (예: 광주)")

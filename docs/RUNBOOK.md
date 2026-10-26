@@ -140,13 +140,17 @@ korailbot pair        # 10분 유효한 1회용 6자리 코드 출력
 
 ```
 상태                                → 계정, 카드, 검색 상태 표시
+조회 20261225 서울 부산 0900 1200     → 조회 결과: 시간표와 좌석 현황 (예약 안 함)
 예약 20261225 서울 부산 0900 1200     → 한 줄로 검색 시작 (또는 `예약` 만 보내고 하나씩 답함)
+예약목록                             → 예약 결과: 코레일에 잡힌 결제 전 예약
 취소                                → 검색 중단
 ```
 
 서버에서:
 
 ```bash
+korailbot search --date 20261225 --from 서울 --to 부산 --time 0900 --until 1200   # 조회 결과
+korailbot reservations                                                        # 예약 결과
 korailbot status
 korailbot logs -f        # 워커 조회 로그 실시간 확인
 ```
@@ -177,5 +181,6 @@ korailbot logs -f        # 워커 조회 로그 실시간 확인
 | 텔레그램 답이 없음 | `systemctl --user status korailbot-telegram`, `pgrep -af "cli.py telegram"`으로 인스턴스가 **하나만** 도는지 확인 |
 | `토큰 확인 실패` | `.env` 토큰 오타, 방화벽이 `api.telegram.org`를 막는지 확인 |
 | "등록되지 않은 사용자" | `korailbot pair` 후 10분 안에 `등록 <코드>` 전송 |
+| `-8204` / `최신 버전으로 업데이트` | 코레일 앱 규격 변경으로 구버전 pykorail 거부. `git pull` → `.venv/bin/pip install -r requirements.txt` → 봇 재시작 |
 | `코레일 이용 제한` / `-8202` / `-2000` | IP 차단. 다른 회선에서 이 문서대로 재구축. `SEARCH_INTERVAL`을 3 미만으로 내리지 말 것 |
 | 계정/카드 복호화 실패 | `CARD_ENCRYPTION_KEY`가 예전과 다름. 예전 값을 넣거나 `login`, `card set`으로 재등록 |

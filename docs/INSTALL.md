@@ -6,7 +6,7 @@
 
 | 준비물 | 설명 |
 |--------|------|
-| Python 3.12 | pykorail이 3.10 이상을 요구하며, 프로젝트는 3.12로 고정되어 있습니다 |
+| Python 3.12 | pykorail 0.5 가 3.11 이상을 요구하며, 프로젝트는 3.12로 고정되어 있습니다 |
 | Redis | CLI와 백그라운드 워커가 상태를 공유하는 저장소. Ubuntu는 패키지, Windows는 WSL2/Docker/Memurai |
 | 코레일 계정 | 휴대폰 번호(`010-1234-5678`), 이메일 또는 회원번호 + 비밀번호 |
 | 가정용 인터넷 회선 | 코레일은 데이터센터·VPN IP를 차단(`-8202`)합니다. 클라우드 서버에서는 동작하지 않습니다 |
@@ -252,15 +252,19 @@ korailbot pair          # 10분 유효한 1회용 6자리 코드 출력
 
 ```bash
 korailbot stations 광주                 # 역 이름 확인 ('역' 제외)
+korailbot search --date 20261225 --from 서울 --to 부산 --time 0900 --until 1200   # 조회 결과(좌석 현황) 확인
 korailbot card set                      # (선택) 자동 결제 카드 등록 - 화면에 표시되지 않음
 korailbot start --date 20261225 --from 서울 --to 부산 --time 0900 --until 1200
 ```
+
+`search` 는 로그인 없이 시간표와 일반실/특실/예약대기 현황만 보여 줍니다. 여기서 코레일 응답이 정상인지 먼저 확인하세요.
 
 조건 요약이 출력되고 `Y`를 입력하면 워커가 시작됩니다 (`-y`로 질문 생략).
 
 ```bash
 korailbot status        # 진행 중 여부, 마지막 결과, 결제 대기
 korailbot logs -f       # 워커 로그 실시간 보기
+korailbot reservations  # 코레일에 잡힌 예약(결제 전) 목록: 예약번호, 좌석, 금액, 결제기한
 korailbot cancel        # 중단
 ```
 
@@ -310,6 +314,7 @@ Docker와 `testcontainers` 가 있으면 테스트용 Redis 컨테이너를 자�
 | `Redis에 연결할 수 없습니다` | Redis 미실행. Ubuntu `sudo systemctl start redis-server`, WSL `wsl sudo service redis-server start`, Docker `docker start korail_redis`. `.env`의 `REDIS_HOST/PORT` 확인 |
 | `korailbot: command not found` | 레포 루트에서 `./korailbot` 또는 `python src/cli.py` 로 실행, 혹은 1-2의 심볼릭 링크 생성 |
 | `코레일 로그인 실패` | 아이디/비밀번호 확인. 로그인은 성공인데 `P058`/`WRC000420` 안내가 나오면 코레일+ 앱에서 로그인해 비밀번호 변경 안내를 처리(변경 또는 다음에 하기)한 뒤 재시도 |
+| `-8204` / `최신 버전으로 업데이트` | 코레일이 2026-10-21 앱 보안 모듈(DynaPath v2)을 바꿔 구버전 pykorail(0.4 이하)을 거부. `git pull` → `.venv/bin/pip install -r requirements.txt` (pykorail 0.5.1 이상) → 봇 재시작 |
 | `코레일 이용 제한` / `-8202` / `-2000` | 클라우드·VPN IP 또는 매크로 판정으로 차단. 가정용 회선에서 실행하고 `SEARCH_INTERVAL`을 3초 미만으로 낮추지 말 것. 차단된 공인 IP는 바뀌어야 풀림 |
 | 역 이름 검증 실패 | `korailbot stations <검색어>` 로 정확한 이름 확인. `'역'`을 빼고 입력 (`서울`, `광명`) |
 | `start` 후 아무 알림이 없음 | 매진이면 자리가 날 때까지 조회만 계속합니다. `korailbot logs -f` 로 조회 로그 확인, `korailbot status` 로 워커 생존 확인 |

@@ -28,6 +28,8 @@ HELP_TEXT = """🚄 코레일 예매 봇 명령어
 
 • 예약 — 조건을 하나씩 물어보며 예약 검색 시작
 • 예약 20261225 서울 부산 0900 1200 — 한 줄로 시작 (날짜 출발 도착 시작시각 [종료시각])
+• 조회 20261225 서울 부산 0900 [1200] — 열차 시간표와 좌석 현황만 확인 (예약 안 함)
+• 예약목록 — 코레일에 잡혀 있는 예약(결제 전) 확인
 • 상태 — 진행 상황 / 마지막 결과
 • 취소 — 진행 중인 검색 중단
 • 결제완료 — 직접 결제 후 알림 중단 (랜덤 배치는 다음 좌석 진행)
@@ -71,10 +73,11 @@ def _is(text: str, *words: str) -> bool:
 class ChatBot:
     """Stateless entry point; conversation state is read/written through ``storage``."""
 
-    def __init__(self, storage, reservation_service, kakao, notifier=None):
+    def __init__(self, storage, reservation_service, kakao, notifier=None, korail_factory=None):
         self.storage = storage
         self.reservation = reservation_service
         self.kakao = kakao
+        self._korail_factory = korail_factory
 
     # ------------------------------------------------------------ dispatch
 
@@ -132,7 +135,12 @@ class ChatBot:
         if _is(text, "카드", "card"):
             return self._card()
 
+        if _is(text, "예약목록", "예약확인", "내예약", "reservations"):
+            return self._reservations()
+
         first = text.split()[0] if text.split() else ""
+        if _is(first, "조회", "시간표", "search"):
+            return self._timetable(text.split()[1:])
         if _is(first, "예약", "reserve", "검색"):
             return self._start_wizard(key, text.split()[1:])
 
@@ -172,6 +180,65 @@ class ChatBot:
             f"유효기간: {card.expire_display}\n저장일: {saved_at}\n\n교체/삭제는 서버에서 `korailbot card set` / `card delete`",
             MAIN_REPLIES,
         )
+
+    # ------------------------------------------------------- timetable / list
+
+    def _korail(self):
+        if self._korail_factory:
+            return self._korail_factory()
+        from services import KorailService
+        return KorailService()
+
+    def _timetable(self, args: List[str]) -> dict:
+        """조회 날짜 출발 도착 시작시각 [종료시각] — timetable with seat state, no reservation."""
+        usage = "형식: 조회 20261225 서울 부산 0900 [1200]"
+        if len(args) < 4:
+            return text_response(f"❌ 입력이 부족합니다.\n{usage}", MAIN_REPLIES)
+        state: dict = {"step": STEP_DATE, "data": {}}
+        for step, value in zip((STEP_DATE, STEP_FROM, STEP_TO, STEP_TIME, STEP_UNTIL), args[:5]):
+            ok, error = self._apply(state, step, value)
+            if not ok:
+                return text_response(f"❌ {error}\n{usage}", MAIN_REPLIES)
+        data = state["data"]
+        until = data.get("until", "2400")
+        from services import KorailAccessRestrictedError
+        from services.train_view import train_lines
+        korail = self._korail()
+        try:
+            trains = korail.search_timetable(data["date"], data["from"], data["to"], dep_time=data["time"] + "00")
+            trains = korail.filter_until(trains, until)
+        except ValueError as e:
+            return text_response(f"❌ {e}", MAIN_REPLIES)
+        except KorailAccessRestrictedError as e:
+            return text_response(f"🚫 코레일 이용 제한: {e}", MAIN_REPLIES)
+        except Exception as e:
+            logger.error(f"Timetable lookup failed: {type(e).__name__}: {e}")
+            return text_response(f"❌ 코레일 조회 실패: {type(e).__name__}: {e}", MAIN_REPLIES)
+        header = f"🔍 {data['from']}→{data['to']} {data['date']} {data['time'][:2]}:{data['time'][2:]}~" + (
+            "" if until == "2400" else f"{until[:2]}:{until[2:]}")
+        one_line = " ".join(args[:5])
+        return text_response("\n".join(train_lines(trains, header)), [("예약", f"예약 {one_line}"), "상태", "도움말"])
+
+    def _reservations(self) -> dict:
+        creds = self.storage.get_credentials(USER_ID)
+        if not creds:
+            return text_response("⚠️ 저장된 코레일 계정이 없습니다. 서버에서 `korailbot login` 을 먼저 실행하세요.", MAIN_REPLIES)
+        from services import KorailAccessRestrictedError
+        from services.train_view import reservation_lines
+        korail = self._korail()
+        if not korail.login(creds.korail_id, creds.korail_pw):
+            return text_response(f"❌ 코레일 로그인 실패: {korail.last_login_error or '알 수 없음'}", MAIN_REPLIES)
+        try:
+            reservations = korail.list_reservations()
+        except ValueError as e:
+            return text_response(f"❌ {e}", MAIN_REPLIES)
+        except KorailAccessRestrictedError as e:
+            return text_response(f"🚫 코레일 이용 제한: {e}", MAIN_REPLIES)
+        except Exception as e:
+            logger.error(f"Reservation list failed: {type(e).__name__}: {e}")
+            return text_response(f"❌ 예약 조회 실패: {type(e).__name__}: {e}", MAIN_REPLIES)
+        return text_response("\n".join(reservation_lines(reservations, "🎫 코레일 예약 (결제 전)")),
+                             ["상태", "결제완료", "도움말"])
 
     # -------------------------------------------------------------- wizard
 

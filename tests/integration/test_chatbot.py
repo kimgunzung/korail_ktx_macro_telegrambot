@@ -108,6 +108,43 @@ class TestCommands:
         text = bot.handle(KEY, "카드").text
         assert "****1111" in text and "4111111111111111" not in text
 
+    def test_timetable_lookup(self, storage, paired):
+        from types import SimpleNamespace
+        train = SimpleNamespace(
+            train_type_name="KTX", train_no="101", dep_time="090000", arr_time="113000", dep_name="서울", arr_name="부산",
+            run_date=_next_week(), wait_reserve_flag=-1, has_general_seat=lambda: False, has_special_seat=lambda: True,
+            has_seat=lambda: True, has_general_waiting_list=lambda: False, has_waiting_list=lambda: False,
+        )
+        korail = Mock()
+        korail.search_timetable.return_value = [train]
+        korail.filter_until.return_value = [train]
+        bot = ChatBot(storage, ReservationService(storage, USER), KakaoService(storage, session=Mock()),
+                      korail_factory=lambda: korail)
+        r = bot.handle(KEY, f"조회 {_next_week()} 서울 부산 0900 1200")
+        assert "🟢 KTX 101  09:00→11:30  서울→부산  일반실 매진 / 특실 ○" in r.text
+        assert r.quick_replies[0] == ("예약", f"예약 {_next_week()} 서울 부산 0900 1200")
+        korail.search_timetable.assert_called_once_with(_next_week(), "서울", "부산", dep_time="090000")
+        korail.login.assert_not_called()
+        assert "형식: 조회" in bot.handle(KEY, "조회 서울 부산").text
+        assert "❌" in bot.handle(KEY, "조회 20200101 서울 부산 0900").text
+
+    def test_reservation_list(self, storage, paired):
+        from types import SimpleNamespace
+        korail = Mock()
+        korail.login.return_value = True
+        korail.list_reservations.return_value = []
+        bot = ChatBot(storage, ReservationService(storage, USER), KakaoService(storage, session=Mock()),
+                      korail_factory=lambda: korail)
+        assert "결제 대기 중인 예약이 없습니다" in bot.handle(KEY, "예약목록").text
+        korail.login.assert_called_once_with("010-1234-5678", "pw")
+        korail.login.return_value = False
+        korail.last_login_error = "앱 업데이트 필요"
+        assert "로그인 실패: 앱 업데이트 필요" in bot.handle(KEY, "내예약").text
+
+    def test_reservation_list_requires_credentials(self, bot, storage):
+        storage.add_paired_user(KEY)
+        assert "korailbot login" in bot.handle(KEY, "예약목록").text
+
     def test_error_is_reported_not_raised(self, bot, paired):
         with patch.object(ReservationService, 'running', side_effect=RuntimeError("redis down")):
             r = bot.handle(KEY, "상태")

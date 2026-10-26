@@ -1,10 +1,12 @@
 """Korail API service wrapper.
 
-Backed by `pykorail` (코레일+ 7.0.8 규격). The public surface used by the rest of
+Backed by `pykorail` (코레일+ 7.0.10 / DynaPath v2 규격). The public surface used by the rest of
 the app is kept stable:
 
 - ``login(username, password) -> bool``
 - ``search_trains(...) -> list``
+- ``search_timetable(...) -> list`` (no login; sold-out trains included)
+- ``list_reservations() -> list``
 - ``reserve_train(...) -> reservation | None | "DUPLICATE"``
 - ``search_and_reserve_loop(...)``
 - ``is_logged_in``, ``_search_interval``
@@ -25,6 +27,7 @@ from pykorail.exceptions import (
     LoginFailedError,
     NeedToLoginError,
     NoResultsError,
+    PasswordChangeRequiredError,
     PastDepartureError,
     SoldOutError,
     StationNotFoundError,
@@ -247,8 +250,14 @@ class KorailService:
         except HttpStatusError as e:
             self.last_login_error = str(e)  # e.g. "HTTP 403: VPN 또는 데이터센터... (-8202)"
             logger.error(f"Korail rejected login request for user {username}: {e}")
+        except PasswordChangeRequiredError as e:
+            self.last_login_error = (
+                f"코레일 안내를 먼저 처리해야 합니다: {e}\n"
+                f"코레일+ 앱에서 로그인해 비밀번호 변경 안내를 확인(변경 또는 다음에 하기)한 뒤 다시 시도하세요."
+            )
+            logger.warning(f"Korail login for {username} blocked by a password-change notice: {e}")
         except LoginFailedError as e:
-            self.last_login_error = str(e)
+            self.last_login_error = self._describe_login_failure(e)
             logger.warning(f"Korail login failed for user {username}: {e}")
         except TransportError as e:
             self.last_login_error = f"네트워크 오류: {e}"
@@ -303,6 +312,91 @@ class KorailService:
         if self._last_login_time and (time.time() - self._last_login_time) >= self._relogin_interval:
             logger.debug(f"🔄 Session older than {self._relogin_interval}s, proactive re-login")
             self._relogin()
+
+    @staticmethod
+    def _describe_login_failure(error: Exception) -> str:
+        """User-facing text for a LoginFailedError, with a hint for the DynaPath/app-version block."""
+        code = str(getattr(error, "code", "") or "")
+        text = str(error)
+        if code == "-8204" or "업데이트" in text:
+            return (
+                f"{text}\n코레일이 앱 규격을 바꿔 이 라이브러리 버전을 거부했습니다. "
+                f"서버에서 `git pull` 후 `pip install -r requirements.txt` 로 pykorail 을 갱신하세요."
+            )
+        return text
+
+    # ------------------------------------------------------------ timetable
+
+    def search_timetable(
+        self,
+        dep_date: str,
+        src_locate: str,
+        dst_locate: str,
+        dep_time: str = "000000",
+        max_dep_time: str = "2400",
+        train_type: str = TrainType.KTX,
+        passenger_count: int = 1,
+    ) -> List:
+        """Timetable lookup for display: sold-out and waiting-list trains included, no login needed.
+
+        Raises:
+            ValueError: bad station or departure already passed
+            KorailAccessRestrictedError: Korail blocked this client
+            KorailError / TransportError: anything else the server or network refused
+        """
+        korail = self._instance()
+        try:
+            return korail.trains.search(
+                src_locate,
+                dst_locate,
+                depart_after=self._depart_after(dep_date, dep_time),
+                train_type=train_type,
+                passengers=[AdultPassenger(passenger_count)],
+                include_no_seats=True,
+                include_waiting_list=True,
+            )
+        except NoResultsError:
+            return []
+        except PastDepartureError as e:
+            raise ValueError(f"출발 시각이 이미 지났습니다: {e}") from e
+        except StationNotFoundError as e:
+            raise ValueError(f"역 이름을 찾을 수 없습니다: {e}") from e
+        except AccessRestrictedError as e:
+            raise KorailAccessRestrictedError(str(e)) from e
+        except HttpStatusError as e:
+            if getattr(e, "status_code", None) == 403:
+                raise KorailAccessRestrictedError(str(e)) from e
+            raise
+
+    def filter_until(self, trains: List, max_dep_time: str = "2400") -> List:
+        """Drop trains departing after ``max_dep_time`` (HHMM, inclusive)."""
+        if not trains or max_dep_time == "2400":
+            return list(trains)
+        limit = int(max_dep_time)
+        return [t for t in trains if 0 < self._extract_departure_time(t) <= limit]
+
+    def list_reservations(self) -> List:
+        """Unpaid reservations held at Korail for the logged-in account.
+
+        Raises:
+            ValueError: not logged in
+            KorailAccessRestrictedError: Korail blocked this client
+        """
+        if not self._korail_instance:
+            raise ValueError("Must login before listing reservations")
+        if not self._logged_in and not self._relogin():
+            raise ValueError("코레일 세션이 만료되어 재로그인에 실패했습니다")
+        try:
+            return self._korail_instance.reservations.all()
+        except NeedToLoginError as e:
+            self._logged_in = False
+            raise ValueError(f"코레일 로그인이 필요합니다: {e}") from e
+        except AccessRestrictedError as e:
+            raise KorailAccessRestrictedError(str(e)) from e
+        except HttpStatusError as e:
+            if getattr(e, "status_code", None) == 403:
+                raise KorailAccessRestrictedError(str(e)) from e
+            raise
 
     # ----------------------------------------------------------------- search
 

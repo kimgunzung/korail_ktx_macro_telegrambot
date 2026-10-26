@@ -260,6 +260,67 @@ class TestLogs:
         assert code == 0 and "로그가 없습니다" in out
 
 
+def _fake_train(dep="090000", general=True):
+    from types import SimpleNamespace
+    return SimpleNamespace(
+        train_type_name="KTX", train_no="101", dep_time=dep, arr_time="113000", dep_name="서울", arr_name="부산",
+        run_date=_next_week(), wait_reserve_flag=-1, has_general_seat=lambda: general, has_special_seat=lambda: False,
+        has_seat=lambda: general, has_general_waiting_list=lambda: False, has_waiting_list=lambda: False,
+    )
+
+
+class TestSearch:
+    def test_prints_timetable_without_login(self, storage, run):
+        trains = [_fake_train("090000"), _fake_train("130000", general=False)]
+        with patch('services.korail_service.KorailService.search_timetable', return_value=trains) as search, \
+             patch('services.korail_service.KorailService.login') as login:
+            code, out = run("search", "--date", _next_week(), "--from", "서울", "--to", "부산", "--time", "0900", "--until", "1200")
+        assert code == 0
+        assert "🟢 KTX 101  09:00→11:30  서울→부산  일반실 ○" in out
+        assert "13:00" not in out  # --until filter applied
+        assert "총 1편, 좌석 있음 1편" in out
+        login.assert_not_called()
+        assert search.call_args.kwargs["train_type"] == "100"
+
+    def test_validates_arguments(self, storage, run):
+        code, out = run("search", "--date", "20200101", "--from", "서울", "--to", "부산")
+        assert code == 1 and "--date" in out
+        code, out = run("search", "--date", _next_week(), "--from", "서울", "--to", "서울")
+        assert code == 1 and "같습니다" in out
+
+    def test_reports_korail_errors(self, storage, run):
+        from services.korail_service import KorailAccessRestrictedError
+        with patch('services.korail_service.KorailService.search_timetable', side_effect=KorailAccessRestrictedError("-2000 매크로")):
+            code, out = run("search", "--date", _next_week(), "--from", "서울", "--to", "부산")
+        assert code == 1 and "코레일 이용 제한" in out
+
+
+class TestReservations:
+    def test_requires_credentials(self, storage, run):
+        code, out = run("reservations")
+        assert code == 1 and "korailbot login" in out
+
+    def test_lists_reservations(self, storage, run):
+        from types import SimpleNamespace
+        storage.save_credentials(USER, KorailCredentials("010-1234-5678", "pw"))
+        reservation = SimpleNamespace(
+            rsv_id="12345678", train=_fake_train(), price=59800, seat_no_count=1, is_waiting=False,
+            buy_limit_date=_next_week(), buy_limit_time="233000", seats=(SimpleNamespace(car="3", seat="7A"),),
+        )
+        with patch('services.korail_service.KorailService.login', return_value=True) as login, \
+             patch('services.korail_service.KorailService.list_reservations', return_value=[reservation]):
+            code, out = run("reservations")
+        assert code == 0 and "[12345678] KTX 101" in out and "3호차 7A · 59,800원" in out
+        login.assert_called_once_with("010-1234-5678", "pw")
+
+    def test_login_failure(self, storage, run):
+        storage.save_credentials(USER, KorailCredentials("010-1234-5678", "pw"))
+        with patch('services.korail_service.KorailService.login', return_value=False), \
+             patch('services.korail_service.KorailService.last_login_error', "앱 업데이트", create=True):
+            code, out = run("reservations")
+        assert code == 1 and "로그인 실패" in out
+
+
 class TestStations:
     def test_search(self, storage, run):
         code, out = run("stations", "광주")

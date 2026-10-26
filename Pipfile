@@ -5,7 +5,7 @@ name = "pypi"
 
 [packages]
 requests = "*"
-pykorail = "==0.2.2"
+pykorail = "==0.5.1"
 pycryptodome = "*"
 redis = "*"
 hiredis = "*"

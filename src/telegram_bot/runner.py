@@ -16,7 +16,7 @@ logger = get_logger(__name__)
 
 SLASH_COMMANDS = {
     "/start": "도움말", "/help": "도움말", "/reserve": "예약", "/status": "상태", "/cancel": "취소",
-    "/paid": "결제완료", "/card": "카드", "/reset": "처음부터",
+    "/paid": "결제완료", "/card": "카드", "/reset": "처음부터", "/search": "조회", "/reservations": "예약목록",
 }
 
 

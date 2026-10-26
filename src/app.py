@@ -8,7 +8,7 @@ from flask import Flask
 from flask_restful import Api
 from flask_cors import CORS
 
-from config.settings import settings
+from config.settings import settings, _DOTENV_LOADED
 from storage.redis import RedisStorage
 from services import (
     TelegramService,
@@ -96,6 +96,7 @@ api.add_resource(
 logger.info("="*60)
 logger.info("Korail KTX Telegram Bot - Redis Version")
 logger.info("="*60)
+logger.info(f".env variables loaded: {_DOTENV_LOADED}")
 logger.info(f"Flask host: {settings.FLASK_HOST}")
 logger.info(f"Flask port: {settings.FLASK_PORT}")
 logger.info(f"Debug mode: {settings.FLASK_DEBUG}")

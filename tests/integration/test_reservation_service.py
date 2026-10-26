@@ -293,3 +293,32 @@ class TestReservationService:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
+
+
+class TestProcessAlive:
+    """Liveness check must never signal the process (Windows os.kill(pid, 0) terminates it)."""
+
+    def test_posix_uses_signal_zero(self):
+        with patch('os.name', 'posix'), patch('os.kill') as kill:
+            assert ReservationService._process_alive(4242) is True
+            kill.assert_called_once_with(4242, 0)
+
+    def test_posix_dead_process(self):
+        with patch('os.name', 'posix'), patch('os.kill', side_effect=ProcessLookupError):
+            assert ReservationService._process_alive(4242) is False
+
+    def test_windows_never_calls_os_kill(self):
+        with patch('os.name', 'nt'), patch('os.kill') as kill, \
+             patch.object(ReservationService, '_windows_process_alive', return_value=True) as win:
+            assert ReservationService._process_alive(4242) is True
+            kill.assert_not_called()
+            win.assert_called_once_with(4242)
+
+    def test_placeholder_pid_is_not_alive(self):
+        with patch('os.kill') as kill:
+            assert ReservationService._process_alive(9999999) is False
+            assert ReservationService._process_alive(0) is False
+            kill.assert_not_called()
+
+
+from services.reservation_service import ReservationService  # noqa: E402  (used above)

@@ -8,6 +8,45 @@ import os
 from typing import Optional
 
 
+def load_dotenv_file(path: Optional[str] = None) -> int:
+    """Load ``KEY=VALUE`` lines from a ``.env`` file into ``os.environ``.
+
+    Existing environment variables win, so values exported by the shell, Docker
+    Compose or mise are never overridden. ``path`` defaults to ``ENV_FILE`` or the
+    ``.env`` next to the project root (one level above ``src/``).
+
+    Returns:
+        Number of variables set
+    """
+    path = path or os.environ.get("ENV_FILE") or os.path.join(
+        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), ".env"
+    )
+    if not os.path.isfile(path):
+        return 0
+    loaded = 0
+    with open(path, "r", encoding="utf-8-sig") as f:
+        for raw in f:
+            line = raw.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            if line.startswith("export "):
+                line = line[len("export "):]
+            key, _, value = line.partition("=")
+            key, value = key.strip(), value.strip()
+            if not key or key in os.environ:
+                continue
+            if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+                value = value[1:-1]
+            elif " #" in value:
+                value = value.split(" #", 1)[0].rstrip()
+            os.environ[key] = value
+            loaded += 1
+    return loaded
+
+
+_DOTENV_LOADED = load_dotenv_file()
+
+
 class Settings:
     """Application settings loaded from environment variables."""
 

@@ -6,15 +6,23 @@
 
 ## 빠른 시작
 
+> **Ubuntu / Windows 설치부터 웹훅 등록까지의 단계별 안내는 [docs/INSTALL.md](docs/INSTALL.md)를 보세요.**
+
 ```bash
 # 프로젝트 클론
-git clone https://github.com/GeunSam2/korail_KTX_macro_telegrambot.git
-cd korail_KTX_macro_telegrambot
+git clone https://github.com/kimgunzung/korail_ktx_macro_telegrambot.git
+cd korail_ktx_macro_telegrambot
 
-# 의존성 설치 및 실행
-make setup       # 처음 한 번만 (pipenv 설치)
-make install     # 패키지 설치
-make run         # 실행
+# 환경변수 (.env 는 앱 시작 시 자동으로 읽힙니다)
+cp .env.example .env     # BOTTOKEN, REDIS_HOST 등 수정
+
+# 의존성 설치 및 실행 (Redis가 먼저 떠 있어야 합니다)
+python3.12 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+python src/app.py
+
+# 텔레그램 웹훅 등록 (공개 HTTPS 주소 필요, 자세한 방법은 docs/INSTALL.md 3단계)
+curl "https://api.telegram.org/bot<TOKEN>/setWebhook?url=https://<공개주소>/telebot"
 ```
 
 ## 참고
@@ -53,9 +61,9 @@ pipenv install
 pipenv run python src/app.py
 ```
 
-**mise 환경변수 로딩 순서:**
-1. `.env.default` - 기본값 (git에 커밋됨)
-2. `.env` - 로컬 오버라이드 (git에 커밋되지 않음)
+**환경변수 로딩 순서:**
+1. 셸/Docker Compose/mise가 export 한 값 (최우선)
+2. 레포 루트의 `.env` (앱이 시작할 때 자동으로 읽음, `ENV_FILE` 로 경로 변경 가능)
 
 #### 방법 2: pipenv 직접 사용
 

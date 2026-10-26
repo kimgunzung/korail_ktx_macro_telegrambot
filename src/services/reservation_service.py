@@ -56,6 +56,8 @@ class ReservationService:
         """True when ``pid`` refers to a live process we may signal."""
         if not pid or pid == 9999999:
             return False
+        if os.name == "nt":
+            return ReservationService._windows_process_alive(pid)
         try:
             os.kill(pid, 0)
             return True
@@ -65,6 +67,26 @@ class ReservationService:
             return True
         except OSError:
             return False
+
+    @staticmethod
+    def _windows_process_alive(pid: int) -> bool:
+        """Windows: ``os.kill(pid, 0)`` would *terminate* the process, so query it instead."""
+        import ctypes
+        import ctypes.wintypes
+
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        STILL_ACTIVE = 259
+        kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+        handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if not handle:
+            return False
+        try:
+            exit_code = ctypes.wintypes.DWORD()
+            if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+                return False
+            return exit_code.value == STILL_ACTIVE
+        finally:
+            kernel32.CloseHandle(handle)
 
     def start_reservation_process(
         self,

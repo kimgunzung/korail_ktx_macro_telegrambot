@@ -1,10 +1,12 @@
 """Korail API service wrapper.
 
-Backed by `pykorail` (코레일+ 7.0.8 규격). The public surface used by the rest of
+Backed by `pykorail` (코레일+ 7.0.10 / DynaPath v2 규격). The public surface used by the rest of
 the app is kept stable:
 
 - ``login(username, password) -> bool``
 - ``search_trains(...) -> list``
+- ``search_timetable(...) -> list`` (no login; sold-out trains included)
+- ``list_reservations() -> list``
 - ``reserve_train(...) -> reservation | None | "DUPLICATE"``
 - ``search_and_reserve_loop(...)``
 - ``is_logged_in``, ``_search_interval``
@@ -16,6 +18,7 @@ from datetime import datetime
 from typing import Optional, List
 
 from pykorail import Korail, TrainType, ReserveOption, AdultPassenger
+from pykorail.models.card import Card
 from pykorail.device import profile_by_id, random_profile
 from pykorail.exceptions import (
     AccessRestrictedError,
@@ -24,6 +27,7 @@ from pykorail.exceptions import (
     LoginFailedError,
     NeedToLoginError,
     NoResultsError,
+    PasswordChangeRequiredError,
     PastDepartureError,
     SoldOutError,
     StationNotFoundError,
@@ -31,12 +35,15 @@ from pykorail.exceptions import (
 )
 
 from config.settings import settings
+from models import CardInfo
 from utils.logger import get_logger
+from utils.pacing import SearchPacer
 
 logger = get_logger(__name__)
 
 __all__ = [
     "KorailService",
+    "PaymentError",
     "DuplicateReservationError",
     "KorailAccessRestrictedError",
     "TrainType",
@@ -46,6 +53,10 @@ __all__ = [
 
 class DuplicateReservationError(Exception):
     """Raised when attempting to reserve a train that's already reserved."""
+
+
+class PaymentError(Exception):
+    """Automatic card payment was refused or could not be completed. ``str(e)`` is user text."""
 
 
 class KorailAccessRestrictedError(Exception):
@@ -138,6 +149,8 @@ class KorailService:
         self._korail_instance: Optional[Korail] = None
         self._logged_in = False
         self._search_interval = settings.KORAIL_SEARCH_INTERVAL
+        # When to search and how long to pause between refreshes (time slots + varied intervals)
+        self.pacer = SearchPacer.from_settings(settings)
         self._username: Optional[str] = None
         self._password: Optional[str] = None
         self._last_login_time: float = 0
@@ -240,8 +253,14 @@ class KorailService:
         except HttpStatusError as e:
             self.last_login_error = str(e)  # e.g. "HTTP 403: VPN 또는 데이터센터... (-8202)"
             logger.error(f"Korail rejected login request for user {username}: {e}")
+        except PasswordChangeRequiredError as e:
+            self.last_login_error = (
+                f"코레일 안내를 먼저 처리해야 합니다: {e}\n"
+                f"코레일+ 앱에서 로그인해 비밀번호 변경 안내를 확인(변경 또는 다음에 하기)한 뒤 다시 시도하세요."
+            )
+            logger.warning(f"Korail login for {username} blocked by a password-change notice: {e}")
         except LoginFailedError as e:
-            self.last_login_error = str(e)
+            self.last_login_error = self._describe_login_failure(e)
             logger.warning(f"Korail login failed for user {username}: {e}")
         except TransportError as e:
             self.last_login_error = f"네트워크 오류: {e}"
@@ -296,6 +315,105 @@ class KorailService:
         if self._last_login_time and (time.time() - self._last_login_time) >= self._relogin_interval:
             logger.debug(f"🔄 Session older than {self._relogin_interval}s, proactive re-login")
             self._relogin()
+
+    @staticmethod
+    def _describe_login_failure(error: Exception) -> str:
+        """User-facing text for a LoginFailedError, with a hint for the DynaPath/app-version block."""
+        code = str(getattr(error, "code", "") or "")
+        text = str(error)
+        if code == "-8204" or "업데이트" in text:
+            return (
+                f"{text}\n코레일이 앱 규격을 바꿔 이 라이브러리 버전을 거부했습니다. "
+                f"서버에서 `git pull` 후 `pip install -r requirements.txt` 로 pykorail 을 갱신하세요."
+            )
+        return text
+
+    # ------------------------------------------------------------ timetable
+
+    def search_timetable(
+        self,
+        dep_date: str,
+        src_locate: str,
+        dst_locate: str,
+        dep_time: str = "000000",
+        max_dep_time: str = "2400",
+        train_type: str = TrainType.KTX,
+        passenger_count: int = 1,
+    ) -> List:
+        """Timetable lookup for display: sold-out and waiting-list trains included, no login needed.
+
+        Raises:
+            ValueError: bad station or departure already passed
+            KorailAccessRestrictedError: Korail blocked this client
+            KorailError / TransportError: anything else the server or network refused
+        """
+        korail = self._instance()
+        try:
+            return korail.trains.search(
+                src_locate,
+                dst_locate,
+                depart_after=self._depart_after(dep_date, dep_time),
+                train_type=train_type,
+                passengers=[AdultPassenger(passenger_count)],
+                include_no_seats=True,
+                include_waiting_list=True,
+            )
+        except NoResultsError:
+            return []
+        except PastDepartureError as e:
+            raise ValueError(f"출발 시각이 이미 지났습니다: {e}") from e
+        except StationNotFoundError as e:
+            raise ValueError(f"역 이름을 찾을 수 없습니다: {e}") from e
+        except AccessRestrictedError as e:
+            raise KorailAccessRestrictedError(str(e)) from e
+        except HttpStatusError as e:
+            if getattr(e, "status_code", None) == 403:
+                raise KorailAccessRestrictedError(str(e)) from e
+            raise
+
+    def filter_until(self, trains: List, max_dep_time: str = "2400") -> List:
+        """Drop trains departing after ``max_dep_time`` (HHMM, inclusive)."""
+        if not trains or max_dep_time == "2400":
+            return list(trains)
+        limit = int(max_dep_time)
+        return [t for t in trains if 0 < self._extract_departure_time(t) <= limit]
+
+    def list_reservations(self) -> List:
+        """Unpaid reservations held at Korail for the logged-in account.
+
+        Raises:
+            ValueError: not logged in
+            KorailAccessRestrictedError: Korail blocked this client
+        """
+        if not self._korail_instance:
+            raise ValueError("Must login before listing reservations")
+        if not self._logged_in and not self._relogin():
+            raise ValueError("코레일 세션이 만료되어 재로그인에 실패했습니다")
+        try:
+            return self._korail_instance.reservations.all()
+        except NeedToLoginError as e:
+            self._logged_in = False
+            raise ValueError(f"코레일 로그인이 필요합니다: {e}") from e
+        except AccessRestrictedError as e:
+            raise KorailAccessRestrictedError(str(e)) from e
+        except HttpStatusError as e:
+            if getattr(e, "status_code", None) == 403:
+                raise KorailAccessRestrictedError(str(e)) from e
+            raise
+
+    # ----------------------------------------------------------------- pacing
+
+    def set_pacing_listener(self, listener) -> None:
+        """``listener(state_dict)`` is called whenever the worker starts or stops waiting for a slot."""
+        self.pacer.on_state = listener
+
+    def wait_for_turn(self, dep_date: str, dep_time: str = "000000") -> None:
+        """Block until the next search session (``SEARCH_WINDOWS``); returns at once in always-mode."""
+        self.pacer.wait_for_window(self._depart_after(dep_date, dep_time))
+
+    def pause(self, at_least: float = 0.0) -> None:
+        """Wait between two refreshes: at least ``SEARCH_INTERVAL``, varied when ``SEARCH_HUMANIZE``."""
+        self.pacer.pause(at_least)
 
     # ----------------------------------------------------------------- search
 
@@ -392,10 +510,11 @@ class KorailService:
             kept = []
             for train in trains:
                 dep_time_int = self._extract_departure_time(train)
-                if 0 < dep_time_int < max_time:
+                # Inclusive: "1800까지" means a train leaving at 18:00 still qualifies
+                if 0 < dep_time_int <= max_time:
                     kept.append(train)
                 elif verbose:
-                    logger.debug(f"  ❌ Filtered out: {dep_time_int} >= {max_time}")
+                    logger.debug(f"  ❌ Filtered out: {dep_time_int} > {max_time}")
             trains = kept
             if verbose:
                 logger.debug(f"📊 After max_dep_time filter: {len(trains)} trains remain")
@@ -539,6 +658,7 @@ class KorailService:
             if is_summary:
                 logger.debug(f"━━━ Search attempt #{attempts} ━━━")
 
+            self.wait_for_turn(dep_date, dep_time)
             self._check_session_refresh()
 
             trains = self.search_trains(
@@ -549,7 +669,7 @@ class KorailService:
             if not trains:
                 if is_summary:
                     logger.debug(f"📊 Attempt #{attempts}: no trains found, retrying...")
-                time.sleep(self._search_interval)
+                self.pause()
                 continue
 
             for idx, train in enumerate(trains, 1):
@@ -569,7 +689,7 @@ class KorailService:
                     logger.debug(f"Train {idx} failed (sold out or unavailable)")
 
             logger.debug(f"All {len(trains)} trains sold out in attempt #{attempts}")
-            time.sleep(self._search_interval)
+            self.pause()
 
     def _search_and_reserve_random(
         self,
@@ -600,6 +720,7 @@ class KorailService:
 
             is_summary = (attempts % 60 == 0)
 
+            self.wait_for_turn(dep_date, dep_time)
             self._check_session_refresh()
 
             trains = self.search_trains(
@@ -610,7 +731,7 @@ class KorailService:
             if not trains:
                 if is_summary:
                     logger.debug(f"📊 Attempt #{attempts}: no trains found, retrying...")
-                time.sleep(self._search_interval)
+                self.pause()
                 continue
 
             for train in trains:
@@ -635,14 +756,89 @@ class KorailService:
                         logger.info(f"All {target_count} seats reserved successfully! Total attempts: {attempts}")
                         return MultiReservationResult(reservations, target_count)
 
-                    time.sleep(self._search_interval * 1.5)
+                    self.pause(at_least=self._search_interval * 1.5)
                     break
                 else:
                     logger.debug("Reservation failed, continuing search...")
 
-            time.sleep(self._search_interval)
+            self.pause()
 
         return MultiReservationResult(reservations, target_count) if reservations else None
+
+    # ---------------------------------------------------------------- payment
+
+    def pay_reservation(self, reservation, card: CardInfo) -> int:
+        """
+        Pay a reservation with a credit card, turning it into a ticket.
+
+        Args:
+            reservation: pykorail Reservation (``MultiReservationResult`` is unwrapped
+                by the caller, one reservation at a time)
+            card: card details collected in the conversation
+
+        Returns:
+            The amount charged (won)
+
+        Raises:
+            PaymentError: Korail refused the payment, or it could not be attempted
+            KorailAccessRestrictedError: Korail blocked this client
+        """
+        if not self._korail_instance:
+            raise PaymentError("로그인되지 않은 상태입니다")
+        if getattr(reservation, "is_waiting", False):
+            raise PaymentError("예약대기 건은 좌석이 배정된 뒤에만 결제할 수 있습니다")
+
+        try:
+            pykorail_card = Card(
+                number=card.number,
+                password=card.password,
+                verify_number=card.verify_number,
+                expire=card.expire,
+                installment=card.installment,
+                is_corporate=card.is_corporate,
+            )
+        except ValueError as e:
+            raise PaymentError(f"카드 정보가 올바르지 않습니다: {e}") from e
+
+        logger.info(f"💳 Paying reservation {getattr(reservation, 'rsv_id', '?')} with card {card.masked}")
+        for attempt in (1, 2):
+            try:
+                if not self._logged_in and not self._relogin():
+                    raise PaymentError("코레일 세션이 만료되어 재로그인에 실패했습니다")
+                target = reservation
+                if getattr(reservation, "wct_no", None) is None:
+                    # pay() needs the ticket-window number; a fresh lookup carries it.
+                    found = self._korail_instance.reservations.find(reservation.rsv_id)
+                    if found is None:
+                        raise PaymentError("결제할 예약을 코레일에서 찾을 수 없습니다 (이미 취소되었을 수 있음)")
+                    target = found
+                self._korail_instance.reservations.pay(target, pykorail_card)
+                price = int(getattr(target, "price", 0) or 0)
+                logger.info(f"✅ Payment succeeded: {price}원 for reservation {getattr(target, 'rsv_id', '?')}")
+                return price
+            except NeedToLoginError as e:
+                if attempt == 2:
+                    raise PaymentError(f"코레일 세션 만료: {e}") from e
+                logger.debug(f"🔒 Session expired during payment, re-logging in: {e}")
+                self._logged_in = False
+                self._relogin()
+            except AccessRestrictedError as e:
+                raise KorailAccessRestrictedError(str(e)) from e
+            except HttpStatusError as e:
+                if getattr(e, "status_code", None) == 403:
+                    raise KorailAccessRestrictedError(str(e)) from e
+                raise PaymentError(f"코레일 서버 오류: {e}") from e
+            except KorailError as e:
+                code = getattr(e, "code", None)
+                raise PaymentError(f"{e}" + (f" ({code})" if code else "")) from e
+            except TransportError as e:
+                raise PaymentError(f"네트워크 오류: {e}") from e
+            except PaymentError:
+                raise
+            except Exception as e:
+                logger.error(f"❌ Unexpected payment error: {type(e).__name__}: {e}", exc_info=True)
+                raise PaymentError(f"{type(e).__name__}: {e}") from e
+        raise PaymentError("결제를 완료하지 못했습니다")  # pragma: no cover - loop always returns/raises
 
     def _cancel_reservations(self, reservations: List) -> None:
         """Cancel a list of reservations (cleanup for failed random allocation)."""

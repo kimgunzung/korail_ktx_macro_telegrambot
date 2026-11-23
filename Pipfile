@@ -4,20 +4,19 @@ verify_ssl = true
 name = "pypi"
 
 [packages]
-flask = "*"
-flask-restful = "*"
-requests = "*"
-flask-cors = "*"
-python-telegram-bot = "*"
-pykorail = "==0.2.2"
-redis = "*"
-hiredis = "*"
+# Versions match requirements.txt (the set verified against Korail). pykorail itself lives in src/pykorail;
+# certifi, curl-cffi and pycryptodome are its dependencies.
+requests = "==2.34.2"
+certifi = "==2026.10.23"
+curl-cffi = "==0.16.3"
+pycryptodome = "==4.2.0"
+redis = "==8.1.0"
+hiredis = "==3.5.0"
 
 [dev-packages]
 pytest = "*"
 pytest-cov = "*"
 pytest-mock = "*"
-pytest-asyncio = "*"
 freezegun = "*"
 testcontainers = {extras = ["redis"], version = "*"}
 

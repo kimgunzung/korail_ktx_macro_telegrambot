@@ -1,22 +1,27 @@
-version: '3.8'
-
+# Redis + the korailbot CLI image.
+#
+#   docker compose up -d redis                       # Redis only (CLI runs on the host)
+#   docker compose run --rm bot login                # CLI inside a container
+#   docker compose run --rm -d bot start --date ...  # worker keeps running in a detached container
+#
+# Korail blocks data-center/VPN IPs, so run this on a home network.
 services:
-  app:
-    image: geunsam2/korailbot:latest
-    container_name: korail_bot
-    ports:
-      - "8000:8080"
+  bot:
+    build: .
+    image: korailbot:local
+    env_file:
+      - .env
     environment:
       - REDIS_HOST=redis
       - REDIS_PORT=6379
       - REDIS_DB=0
-      - PYTHONUNBUFFERED=1
-    env_file:
-      - .env
+    volumes:
+      - bot_data:/data
     depends_on:
       redis:
         condition: service_healthy
-    restart: unless-stopped
+    stdin_open: true
+    tty: true
     networks:
       - korail_network
 
@@ -24,14 +29,14 @@ services:
     image: redis:7-alpine
     container_name: korail_redis
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     volumes:
       - redis_data:/data
     command: >
       redis-server
       --appendonly yes
-      --maxmemory 512mb
-      --maxmemory-policy allkeys-lru
+      --maxmemory 256mb
+      --maxmemory-policy noeviction
       --save 60 1000
       --loglevel notice
     healthcheck:
@@ -45,6 +50,8 @@ services:
 
 volumes:
   redis_data:
+    driver: local
+  bot_data:
     driver: local
 
 networks:

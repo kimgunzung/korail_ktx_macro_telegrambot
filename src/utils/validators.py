@@ -405,3 +405,95 @@ class InputValidator:
             return False, "유효하지 않은 문자가 포함되어 있습니다."
 
         return True, None
+
+    # ==================== Card (automatic payment) ====================
+
+    @staticmethod
+    def _luhn_ok(digits: str) -> bool:
+        total = 0
+        for i, ch in enumerate(reversed(digits)):
+            d = int(ch)
+            if i % 2 == 1:
+                d *= 2
+                if d > 9:
+                    d -= 9
+            total += d
+        return total % 10 == 0
+
+    @staticmethod
+    def validate_card_number(number: str) -> Tuple[bool, Optional[str]]:
+        """Validate a credit card number (digits, optional hyphens/spaces, Luhn checksum)."""
+        if not number or not number.strip():
+            return False, "카드번호를 입력해주세요."
+        digits = number.replace("-", "").replace(" ", "")
+        if not digits.isdigit():
+            return False, "카드번호는 숫자만 입력해주세요. (하이픈 생략 가능)"
+        if len(digits) < 13 or len(digits) > 19:
+            return False, "카드번호 자릿수가 올바르지 않습니다. (13~19자리)"
+        if not InputValidator._luhn_ok(digits):
+            return False, "카드번호가 올바르지 않습니다. 다시 확인해주세요."
+        return True, None
+
+    @staticmethod
+    def normalize_card_number(number: str) -> str:
+        return number.replace("-", "").replace(" ", "")
+
+    @staticmethod
+    def validate_card_expire(expire: str) -> Tuple[bool, Optional[str]]:
+        """Validate card expiry. Accepts YYMM or MM/YY and checks it is not in the past."""
+        if not expire or not expire.strip():
+            return False, "유효기간을 입력해주세요."
+        normalized = InputValidator.normalize_card_expire(expire)
+        if normalized is None:
+            return False, "유효기간 형식이 올바르지 않습니다. YYMM(예: 2812) 또는 MM/YY(예: 12/28)로 입력해주세요."
+        yy, mm = int(normalized[:2]), int(normalized[2:])
+        if mm < 1 or mm > 12:
+            return False, f"유효기간의 월이 올바르지 않습니다. (입력: {mm}월)"
+        today = datetime.today()
+        if (2000 + yy, mm) < (today.year, today.month):
+            return False, "이미 만료된 카드입니다."
+        return True, None
+
+    @staticmethod
+    def normalize_card_expire(expire: str) -> Optional[str]:
+        """Return expiry as YYMM. ``MM/YY`` and ``MM-YY`` are converted; None if unparsable."""
+        value = expire.strip()
+        if "/" in value or "-" in value:
+            parts = value.replace("-", "/").split("/")
+            if len(parts) != 2 or not all(p.isdigit() for p in parts):
+                return None
+            mm, yy = parts
+            if len(mm) != 2 or len(yy) not in (2, 4):
+                return None
+            return f"{yy[-2:]}{mm}"
+        if value.isdigit() and len(value) == 4:
+            return value
+        return None
+
+    @staticmethod
+    def validate_card_password(password: str) -> Tuple[bool, Optional[str]]:
+        """Validate the first two digits of the card password."""
+        if not password or not password.strip():
+            return False, "카드 비밀번호 앞 2자리를 입력해주세요."
+        value = password.strip()
+        if not value.isdigit() or len(value) != 2:
+            return False, "카드 비밀번호는 앞 2자리 숫자만 입력해주세요."
+        return True, None
+
+    @staticmethod
+    def validate_card_verify_number(value: str) -> Tuple[bool, Optional[str]]:
+        """Validate the owner verification number: YYMMDD birth date or 10-digit business number."""
+        if not value or not value.strip():
+            return False, "생년월일 6자리(개인) 또는 사업자등록번호 10자리(법인)를 입력해주세요."
+        digits = value.strip().replace("-", "")
+        if not digits.isdigit():
+            return False, "숫자만 입력해주세요. (생년월일 YYMMDD 또는 사업자등록번호 10자리)"
+        if len(digits) == 6:
+            try:
+                datetime.strptime(digits, "%y%m%d")
+            except ValueError:
+                return False, "생년월일이 올바르지 않습니다. (예: 900101)"
+            return True, None
+        if len(digits) == 10:
+            return True, None
+        return False, "생년월일은 6자리, 사업자등록번호는 10자리로 입력해주세요."

@@ -1,5 +1,5 @@
 """Reservation data models."""
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from typing import Optional, List
@@ -19,6 +19,25 @@ class TrainSearchParams:
     special_option_display: str = "GENERAL_FIRST"
     passenger_count: int = 1  # Number of adult passengers (1-9)
     seat_strategy: str = "consecutive"  # "consecutive" or "random"
+
+    SEAT_LABELS = {
+        "GENERAL_FIRST": "일반실 우선", "GENERAL_ONLY": "일반실만",
+        "SPECIAL_FIRST": "특실 우선", "SPECIAL_ONLY": "특실만",
+    }
+    TRAIN_LABELS = {"KTX": "KTX", "ALL": "모든 열차"}
+
+    def summary_lines(self) -> list[str]:
+        """Human readable description used by the CLI, the chatbot and notifications."""
+        seat = self.SEAT_LABELS.get(self.special_option_display, self.special_option_display)
+        train = self.TRAIN_LABELS.get(self.train_type_display, self.train_type_display)
+        return [
+            f"📅 출발일: {self.dep_date}",
+            f"🚉 구간: {self.src_locate} → {self.dst_locate}",
+            f"🕐 검색 시각: {self.dep_time[:4]} ~ {self.max_dep_time}",
+            f"🚄 열차: {train}",
+            f"💺 좌석: {seat}",
+            f"👥 인원: {self.passenger_count}명 ({'연속 좌석' if self.seat_strategy == 'consecutive' else '랜덤 배치'})",
+        ]
 
     def validate(self) -> tuple[bool, Optional[str]]:
         """
@@ -50,7 +69,8 @@ class RunningReservation:
     process_id: int
     korail_id: str
     search_params: TrainSearchParams
-    started_at: datetime = datetime.now()
+    # default_factory: a plain ``datetime.now()`` default is evaluated once at import time
+    started_at: datetime = field(default_factory=lambda: datetime.now())
 
 
 @dataclass
@@ -58,8 +78,43 @@ class PaymentStatus:
     """Payment completion status for a reservation."""
     chat_id: int
     completed: bool = False
-    reservation_time: Optional[datetime] = None
+    reservation_time: Optional[datetime] = field(default_factory=lambda: datetime.now())
     reminder_active: bool = False
+
+    @property
+    def created_at(self) -> Optional[datetime]:
+        """Alias of ``reservation_time`` (when the reminder/reservation was created)."""
+        return self.reservation_time
+
+    @created_at.setter
+    def created_at(self, value: Optional[datetime]) -> None:
+        self.reservation_time = value
+
+
+@dataclass
+class ReservationResult:
+    """Last outcome reported by the worker (shown by ``korailbot status``)."""
+    status: str            # "success" | "failed" | "partial" | "cancelled"
+    message: str           # human readable summary (what was sent to KakaoTalk)
+    paid: bool = False
+    reported_at: datetime = field(default_factory=lambda: datetime.now())
+
+    def to_dict(self) -> dict:
+        return {
+            "status": self.status,
+            "message": self.message,
+            "paid": self.paid,
+            "reported_at": self.reported_at.isoformat(),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "ReservationResult":
+        return cls(
+            status=data["status"],
+            message=data.get("message", ""),
+            paid=bool(data.get("paid", False)),
+            reported_at=datetime.fromisoformat(data["reported_at"]) if data.get("reported_at") else datetime.now(),
+        )
 
 
 class ReservationPaymentStatus(Enum):

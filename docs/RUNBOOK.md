@@ -8,6 +8,25 @@
 
 ---
 
+## 한 번에 설치 (권장)
+
+새 장치에서 아래 네 줄이면 1~6단계가 끝납니다. 스크립트가 패키지 설치, 가상환경, `.env`, 봇 서비스 등록을 하고
+텔레그램 토큰, 코레일 계정, 카드, 채팅 등록 코드를 차례로 물어봅니다. 비밀값은 화면에 표시되지 않습니다.
+
+```bash
+sudo apt update && sudo apt install -y git
+mkdir -p ~/projects && cd ~/projects
+git clone https://github.com/kimgunzung/korail_ktx_macro_telegrambot.git
+cd korail_ktx_macro_telegrambot && ./scripts/install.sh
+```
+
+- 예전 장치의 `.env` 를 가져왔다면 `./scripts/install.sh --env /경로/.env` 로 실행합니다. 토큰과 암호화 키를 다시 입력하지 않아도 됩니다.
+- 다시 실행해도 기존 `.env`, `.venv`, 저장된 계정·카드는 유지됩니다. 코드 업데이트 뒤에도 `git pull && ./scripts/install.sh` 하나로 충분합니다.
+- 옵션: `--no-apt`(패키지 설치 생략), `--no-service`(서비스 등록 생략), `-y`(질문 없이, 비밀값 입력 단계는 건너뜀).
+- 끝나면 [7. 동작 확인](#7-동작-확인)으로 갑니다. 예전 장치의 봇은 아래 0단계대로 **반드시 먼저 끕니다**.
+
+스크립트를 쓰지 않고 직접 하려면 0~6단계를 순서대로 따릅니다.
+
 ## 0. 예전 서버에서 챙길 것 (접속이 되는 경우)
 
 | 항목 | 위치 | 필요성 |
@@ -165,7 +184,7 @@ korailbot logs -f        # 워커 조회 로그 실시간 확인
 | 봇 재시작 (`.env` 수정 후) | `systemctl --user restart korailbot-telegram` |
 | 봇 중지 / 시작 | `systemctl --user stop korailbot-telegram` / `start` |
 | 봇 로그 | `journalctl --user -u korailbot-telegram -f` |
-| 코드 업데이트 | `cd ~/projects/korail_ktx_macro_telegrambot && git pull && .venv/bin/pip install -r requirements.txt && systemctl --user restart korailbot-telegram` |
+| 코드 업데이트 | `cd ~/projects/korail_ktx_macro_telegrambot && git pull && ./scripts/install.sh -y` (의존성 갱신과 봇 재시작 포함) |
 | 검색 중단 | `korailbot cancel` 또는 텔레그램 `취소` |
 | 등록 채팅 전체 해제 | `korailbot unpair` |
 | 카드 삭제 / 계정 삭제 | `korailbot card delete` / `korailbot logout` |
@@ -184,7 +203,7 @@ korailbot logs -f        # 워커 조회 로그 실시간 확인
 | 텔레그램 답이 없음 | `systemctl --user status korailbot-telegram`, `pgrep -af "cli.py telegram"`으로 인스턴스가 **하나만** 도는지 확인 |
 | `토큰 확인 실패` | `.env` 토큰 오타, 방화벽이 `api.telegram.org`를 막는지 확인 |
 | "등록되지 않은 사용자" | `korailbot pair` 후 10분 안에 `등록 <코드>` 전송 |
-| `-8204` / `최신 버전으로 업데이트` | 코레일 앱 규격 변경으로 pykorail 거부. 먼저 `git pull` → `.venv/bin/pip install -r requirements.txt` → 봇 재시작. 그래도 같으면 보관본(0.5.1)이 막힌 것이고, pykorail 원 배포처가 사라져 갱신본이 없으므로 대체 수단이 필요 |
-| `No matching distribution found for pykorail` | 저장소 루트의 `vendor/` 폴더가 없거나 오래된 체크아웃. `git pull` 후 `requirements.txt` 첫 줄에 `--find-links vendor` 가 있는지 확인 |
+| `-8204` / `최신 버전으로 업데이트` | 코레일 앱 규격 변경으로 pykorail 거부. 먼저 `git pull` → `.venv/bin/pip install -r requirements.txt` → 봇 재시작. 그래도 같으면 보관 소스(0.5.1)가 막힌 것이고, 갱신본을 받을 곳이 없어 `src/pykorail/` 을 직접 고쳐야 함 (`src/pykorail/VENDORED.md`) |
+| `No matching distribution found for pykorail` | 오래된 체크아웃. pykorail 은 이제 `src/pykorail/` 소스로 들어 있어 설치하지 않습니다. `git pull` 후 `./scripts/install.sh` 재실행 |
 | `코레일 이용 제한` / `-8202` / `-2000` | IP 차단. 다른 회선에서 이 문서대로 재구축. `SEARCH_INTERVAL`을 3 미만으로 내리지 말 것 |
 | 계정/카드 복호화 실패 | `CARD_ENCRYPTION_KEY`가 예전과 다름. 예전 값을 넣거나 `login`, `card set`으로 재등록 |

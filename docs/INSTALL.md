@@ -19,6 +19,14 @@
 
 ## 1. Ubuntu (20.04 / 22.04 / 24.04)
 
+> **한 번에 설치**: 아래 1-1 ~ 1-4 와 텔레그램 봇 서비스 등록(B-2)을 스크립트 하나가 처리합니다.
+> ```bash
+> sudo apt update && sudo apt install -y git
+> git clone https://github.com/kimgunzung/korail_ktx_macro_telegrambot.git
+> cd korail_ktx_macro_telegrambot && ./scripts/install.sh
+> ```
+> 이미 있는 `.env`, `.venv` 는 유지하므로 다시 실행해도 안전합니다. 옵션은 `./scripts/install.sh --help`. 단계별로 직접 하려면 아래를 따르세요.
+
 ### 1-1. 시스템 패키지
 
 ```bash
@@ -40,7 +48,7 @@ cd korail_ktx_macro_telegrambot
 python3.12 -m venv .venv
 source .venv/bin/activate
 pip install --upgrade pip
-pip install -r requirements.txt
+pip install -r requirements.txt     # 코레일 클라이언트(pykorail)는 src/pykorail 에 포함되어 따로 설치하지 않음
 ```
 
 레포 루트의 `./korailbot` 스크립트가 `.venv`를 자동으로 사용합니다. 어디서든 쓰려면 PATH에 추가하세요.
@@ -315,7 +323,7 @@ Docker와 `testcontainers` 가 있으면 테스트용 Redis 컨테이너를 자�
 | `korailbot: command not found` | 레포 루트에서 `./korailbot` 또는 `python src/cli.py` 로 실행, 혹은 1-2의 심볼릭 링크 생성 |
 | `코레일 로그인 실패` | 아이디/비밀번호 확인. 로그인은 성공인데 `P058`/`WRC000420` 안내가 나오면 코레일+ 앱에서 로그인해 비밀번호 변경 안내를 처리(변경 또는 다음에 하기)한 뒤 재시도 |
 | `-8204` / `최신 버전으로 업데이트` | 코레일이 2026-10-21 앱 보안 모듈(DynaPath v2)을 바꿔 구버전 pykorail(0.4 이하)을 거부. `git pull` → `.venv/bin/pip install -r requirements.txt` (pykorail 0.5.1 이상) → 봇 재시작 |
-| `No matching distribution found for pykorail` | pykorail 이 PyPI 에서 삭제됨(2026-11). `git pull` 로 `vendor/` 폴더와 `--find-links vendor` 가 든 `requirements.txt` 를 받은 뒤 다시 설치 |
+| `No matching distribution found for pykorail` | 오래된 체크아웃. pykorail 은 PyPI 에서 삭제되어(2026-11) 이제 `src/pykorail/` 소스를 씁니다. `git pull` 후 `pip install -r requirements.txt` 를 다시 실행 |
 | `코레일 이용 제한` / `-8202` / `-2000` | 클라우드·VPN IP 또는 매크로 판정으로 차단. 가정용 회선에서 실행하고 `SEARCH_INTERVAL`을 3초 미만으로 낮추지 말 것. 차단된 공인 IP는 바뀌어야 풀림 |
 | 역 이름 검증 실패 | `korailbot stations <검색어>` 로 정확한 이름 확인. `'역'`을 빼고 입력 (`서울`, `광명`) |
 | `start` 후 아무 알림이 없음 | 매진이면 자리가 날 때까지 조회합니다. 조회는 `SEARCH_WINDOWS` 시간대(기본 00·06·07·18·19시부터 약 30분)에만 하며, 그 밖에는 `status` 에 `⏸ 대기 중 · 다음 시도 …` 로 표시됩니다. `korailbot logs -f` 로 조회 로그 확인, `korailbot status` 로 워커 생존 확인 |

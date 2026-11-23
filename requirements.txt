@@ -1,5 +1,5 @@
-# pykorail was removed from PyPI (2026-11); it is installed from the wheel kept in vendor/ (see vendor/README.md)
---find-links vendor
+# pykorail is not installed from here: it was removed from PyPI (2026-11) and its source now lives in
+# src/pykorail (see src/pykorail/VENDORED.md). certifi, curl_cffi and pycryptodome below are its dependencies.
 certifi==2026.10.23
 cffi==2.1.1
 charset-normalizer==3.5.2
@@ -8,7 +8,6 @@ hiredis==3.5.0
 idna==3.20
 pycparser==3.12
 pycryptodome==4.2.0
-pykorail==0.5.1
 redis==8.1.0
 requests==2.34.2
 urllib3==2.8.0

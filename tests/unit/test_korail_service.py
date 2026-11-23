@@ -298,3 +298,15 @@ class TestSearchWindows:
         fake.reservations.create.return_value = "RESERVED"
         assert svc.search_and_reserve_loop("20991231", "서울", "부산") == "RESERVED"
         assert slept == [svc._search_interval, svc._search_interval]
+
+
+class TestVendoredClient:
+    def test_pykorail_is_the_in_tree_source(self):
+        """pykorail was removed from PyPI; the copy under src/ must be the one that gets imported."""
+        import os
+        import pykorail
+
+        src = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "src")
+        assert os.path.dirname(os.path.dirname(os.path.abspath(pykorail.__file__))) == src
+        assert pykorail.__version__ == "0.5.1"
+        assert os.path.exists(os.path.join(src, "pykorail", "LICENSE"))

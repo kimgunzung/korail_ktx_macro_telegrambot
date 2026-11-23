@@ -37,6 +37,7 @@ from pykorail.exceptions import (
 from config.settings import settings
 from models import CardInfo
 from utils.logger import get_logger
+from utils.pacing import SearchPacer
 
 logger = get_logger(__name__)
 
@@ -148,6 +149,8 @@ class KorailService:
         self._korail_instance: Optional[Korail] = None
         self._logged_in = False
         self._search_interval = settings.KORAIL_SEARCH_INTERVAL
+        # When to search and how long to pause between refreshes (time slots + varied intervals)
+        self.pacer = SearchPacer.from_settings(settings)
         self._username: Optional[str] = None
         self._password: Optional[str] = None
         self._last_login_time: float = 0
@@ -398,6 +401,20 @@ class KorailService:
                 raise KorailAccessRestrictedError(str(e)) from e
             raise
 
+    # ----------------------------------------------------------------- pacing
+
+    def set_pacing_listener(self, listener) -> None:
+        """``listener(state_dict)`` is called whenever the worker starts or stops waiting for a slot."""
+        self.pacer.on_state = listener
+
+    def wait_for_turn(self, dep_date: str, dep_time: str = "000000") -> None:
+        """Block until the next search session (``SEARCH_WINDOWS``); returns at once in always-mode."""
+        self.pacer.wait_for_window(self._depart_after(dep_date, dep_time))
+
+    def pause(self, at_least: float = 0.0) -> None:
+        """Wait between two refreshes: at least ``SEARCH_INTERVAL``, varied when ``SEARCH_HUMANIZE``."""
+        self.pacer.pause(at_least)
+
     # ----------------------------------------------------------------- search
 
     @staticmethod
@@ -641,6 +658,7 @@ class KorailService:
             if is_summary:
                 logger.debug(f"━━━ Search attempt #{attempts} ━━━")
 
+            self.wait_for_turn(dep_date, dep_time)
             self._check_session_refresh()
 
             trains = self.search_trains(
@@ -651,7 +669,7 @@ class KorailService:
             if not trains:
                 if is_summary:
                     logger.debug(f"📊 Attempt #{attempts}: no trains found, retrying...")
-                time.sleep(self._search_interval)
+                self.pause()
                 continue
 
             for idx, train in enumerate(trains, 1):
@@ -671,7 +689,7 @@ class KorailService:
                     logger.debug(f"Train {idx} failed (sold out or unavailable)")
 
             logger.debug(f"All {len(trains)} trains sold out in attempt #{attempts}")
-            time.sleep(self._search_interval)
+            self.pause()
 
     def _search_and_reserve_random(
         self,
@@ -702,6 +720,7 @@ class KorailService:
 
             is_summary = (attempts % 60 == 0)
 
+            self.wait_for_turn(dep_date, dep_time)
             self._check_session_refresh()
 
             trains = self.search_trains(
@@ -712,7 +731,7 @@ class KorailService:
             if not trains:
                 if is_summary:
                     logger.debug(f"📊 Attempt #{attempts}: no trains found, retrying...")
-                time.sleep(self._search_interval)
+                self.pause()
                 continue
 
             for train in trains:
@@ -737,12 +756,12 @@ class KorailService:
                         logger.info(f"All {target_count} seats reserved successfully! Total attempts: {attempts}")
                         return MultiReservationResult(reservations, target_count)
 
-                    time.sleep(self._search_interval * 1.5)
+                    self.pause(at_least=self._search_interval * 1.5)
                     break
                 else:
                     logger.debug("Reservation failed, continuing search...")
 
-            time.sleep(self._search_interval)
+            self.pause()
 
         return MultiReservationResult(reservations, target_count) if reservations else None
 

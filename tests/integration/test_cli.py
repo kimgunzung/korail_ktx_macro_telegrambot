@@ -260,6 +260,42 @@ class TestLogs:
         assert code == 0 and "로그가 없습니다" in out
 
 
+class TestSearchSchedule:
+    def test_status_shows_slots_and_waiting_state(self, storage, run, monkeypatch):
+        monkeypatch.setattr(settings, "SEARCH_WINDOWS", "06:00-06:30,18:00-18:30")
+        params = TrainSearchParams(dep_date=_next_week(), src_locate="서울", dst_locate="부산", dep_time="090000")
+        storage.save_running_reservation(RunningReservation(
+            chat_id=USER, process_id=__import__("os").getpid(), korail_id="010-1234-5678", search_params=params))
+        storage.save_search_schedule(USER, {"state": "waiting", "kind": "window",
+                                            "start": "2026-12-01T18:03:20+09:00", "end": "2026-12-01T18:31:05+09:00"})
+        code, out = run("status")
+        assert code == 0
+        assert "🕒 시도 시간대: 06:00~06:30, 18:00~18:30 무렵" in out
+        assert "⏸ 대기 중 · 다음 시도 12/01 18:03~18:31경" in out
+        storage.save_search_schedule(USER, {"state": "active", "kind": "window",
+                                            "start": "2026-12-01T18:03:20+09:00", "end": "2026-12-01T18:31:05+09:00"})
+        assert "▶ 지금 시도 중 (18:31경까지)" in run("status")[1]
+
+    def test_always_mode_shows_nothing(self, storage, run):
+        params = TrainSearchParams(dep_date=_next_week(), src_locate="서울", dst_locate="부산", dep_time="090000")
+        storage.save_running_reservation(RunningReservation(
+            chat_id=USER, process_id=__import__("os").getpid(), korail_id="010-1234-5678", search_params=params))
+        assert "시도 시간대" not in run("status")[1]
+
+    def test_cancel_clears_schedule(self, storage, run):
+        storage.save_search_schedule(USER, {"state": "active", "start": "x", "end": "y"})
+        params = TrainSearchParams(dep_date=_next_week(), src_locate="서울", dst_locate="부산", dep_time="090000")
+        storage.save_running_reservation(RunningReservation(
+            chat_id=USER, process_id=999999, korail_id="010-1234-5678", search_params=params))
+        run("cancel")
+        assert storage.get_search_schedule(USER) is None
+
+    def test_invalid_windows_setting_is_reported(self, storage, run, monkeypatch):
+        monkeypatch.setattr(settings, "SEARCH_WINDOWS", "18시부터")
+        code, out = run("status")
+        assert code == 2 and "설정 오류" in out and "SEARCH_WINDOWS" in out
+
+
 def _fake_train(dep="090000", general=True):
     from types import SimpleNamespace
     return SimpleNamespace(

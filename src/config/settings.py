@@ -63,6 +63,17 @@ class Settings:
 
     # Korail Configuration
     KORAIL_SEARCH_INTERVAL: int = int(os.environ.get('SEARCH_INTERVAL', '3'))  # seconds between searches
+    # When to search (KST). The worker is idle outside these daily slots; "always" searches all the
+    # time. Each slot starts 0..SEARCH_WINDOW_START_JITTER_MINUTES late and its length varies by
+    # +-SEARCH_WINDOW_LENGTH_JITTER (0.25 = 25%), so no two days look the same.
+    SEARCH_WINDOWS: str = os.environ.get(
+        'SEARCH_WINDOWS', '00:00-00:30,06:00-06:30,07:00-07:30,18:00-18:30,19:00-19:30')
+    SEARCH_WINDOW_START_JITTER_MINUTES: float = float(os.environ.get('SEARCH_WINDOW_START_JITTER_MINUTES', '5'))
+    SEARCH_WINDOW_LENGTH_JITTER: float = float(os.environ.get('SEARCH_WINDOW_LENGTH_JITTER', '0.25'))
+    # Minutes of searching right after `start`, before waiting for the first slot (0 = none).
+    SEARCH_INITIAL_MINUTES: float = float(os.environ.get('SEARCH_INITIAL_MINUTES', '2'))
+    # Vary the pause between refreshes (SEARCH_INTERVAL stays the minimum). False = fixed interval.
+    SEARCH_HUMANIZE: bool = _bool('SEARCH_HUMANIZE', 'True')
     # DynaPath device identity. Pin explicitly or let the service persist a generated one to a file
     # so the CLI and every background worker present the same device to Korail.
     KORAIL_DEVICE_PROFILE_ID: Optional[str] = os.environ.get('KORAIL_DEVICE_PROFILE_ID')
@@ -124,6 +135,10 @@ class Settings:
             raise ValueError("SEARCH_INTERVAL must be at least 1 second")
         if self.PAYMENT_TIMEOUT_MINUTES < 1:
             raise ValueError("PAYMENT_TIMEOUT_MINUTES must be at least 1")
+        from utils.pacing import parse_windows
+        parse_windows(self.SEARCH_WINDOWS)  # raises ValueError with a user-facing message
+        if self.SEARCH_WINDOW_START_JITTER_MINUTES < 0 or not 0 <= self.SEARCH_WINDOW_LENGTH_JITTER < 1:
+            raise ValueError("SEARCH_WINDOW_START_JITTER_MINUTES must be >= 0 and SEARCH_WINDOW_LENGTH_JITTER in [0, 1)")
 
     def kakao_enabled(self) -> bool:
         """True when the KakaoTalk integration is configured."""

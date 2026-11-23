@@ -106,6 +106,7 @@ class ReservationService:
         self.storage.delete_multi_reservation_status(self.user_id)
         self.storage.delete_partial_reservations(self.user_id)
         self.storage.delete_payment_status(self.user_id)
+        self.storage.save_search_schedule(self.user_id, None)
 
         started_at = datetime.now()
         os.makedirs(settings.LOG_DIR, exist_ok=True)
@@ -177,6 +178,7 @@ class ReservationService:
         self.storage.delete_multi_reservation_status(self.user_id)
         self.storage.delete_partial_reservations(self.user_id)
         self.storage.delete_payment_status(self.user_id)
+        self.storage.save_search_schedule(self.user_id, None)
         return reservation
 
     # ----------------------------------------------------------------- paid

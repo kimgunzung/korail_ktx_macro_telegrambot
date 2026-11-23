@@ -45,6 +45,13 @@ class StorageInterface(ABC):
     @abstractmethod
     def save_last_result(self, user_id: int, result: ReservationResult) -> None: ...
 
+    # Search schedule: {"state": "active"|"waiting", "kind", "start", "end"} written by the worker
+    @abstractmethod
+    def get_search_schedule(self, user_id: int) -> Optional[dict]: ...
+
+    @abstractmethod
+    def save_search_schedule(self, user_id: int, state: Optional[dict]) -> None: ...
+
     # Payment Status Management
     @abstractmethod
     def get_payment_status(self, user_id: int) -> Optional[PaymentStatus]: ...

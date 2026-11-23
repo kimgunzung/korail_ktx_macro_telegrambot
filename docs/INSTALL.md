@@ -317,7 +317,7 @@ Docker와 `testcontainers` 가 있으면 테스트용 Redis 컨테이너를 자�
 | `-8204` / `최신 버전으로 업데이트` | 코레일이 2026-10-21 앱 보안 모듈(DynaPath v2)을 바꿔 구버전 pykorail(0.4 이하)을 거부. `git pull` → `.venv/bin/pip install -r requirements.txt` (pykorail 0.5.1 이상) → 봇 재시작 |
 | `코레일 이용 제한` / `-8202` / `-2000` | 클라우드·VPN IP 또는 매크로 판정으로 차단. 가정용 회선에서 실행하고 `SEARCH_INTERVAL`을 3초 미만으로 낮추지 말 것. 차단된 공인 IP는 바뀌어야 풀림 |
 | 역 이름 검증 실패 | `korailbot stations <검색어>` 로 정확한 이름 확인. `'역'`을 빼고 입력 (`서울`, `광명`) |
-| `start` 후 아무 알림이 없음 | 매진이면 자리가 날 때까지 조회만 계속합니다. `korailbot logs -f` 로 조회 로그 확인, `korailbot status` 로 워커 생존 확인 |
+| `start` 후 아무 알림이 없음 | 매진이면 자리가 날 때까지 조회합니다. 조회는 `SEARCH_WINDOWS` 시간대(기본 00·06·07·18·19시부터 약 30분)에만 하며, 그 밖에는 `status` 에 `⏸ 대기 중 · 다음 시도 …` 로 표시됩니다. `korailbot logs -f` 로 조회 로그 확인, `korailbot status` 로 워커 생존 확인 |
 | 카카오 `kakao link` 가 응답을 못 받음 | Redirect URI가 `http://localhost:8080/kakao/oauth` 로 정확히 등록됐는지, 8080 포트를 다른 프로그램이 쓰고 있지 않은지(`KAKAO_LOCAL_PORT` 변경) 확인. 수동으로 `--code` 전달 가능 |
 | 카카오 `insufficient scopes (-402)` | 동의항목에서 `talk_message` 가 꺼져 있음. 켠 뒤 `korailbot kakao unlink` → `kakao link` 재연동 |
 | 텔레그램 봇이 "등록되지 않은 사용자" 라고 답함 | `korailbot pair` 로 코드를 만들어 `등록 <코드>` 전송. 코드는 10분 유효, 1회용 |

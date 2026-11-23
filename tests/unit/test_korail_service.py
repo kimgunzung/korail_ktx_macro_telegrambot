@@ -237,3 +237,64 @@ class TestListReservations:
         with pytest.raises(ValueError):
             svc.list_reservations()
         assert not svc.is_logged_in
+
+
+class TestSearchWindows:
+    """The reservation loop only queries Korail inside the configured time slots."""
+
+    def test_loop_searches_only_inside_slots_with_varied_pauses(self, service):
+        import random
+        from datetime import timedelta, timezone
+        from utils.pacing import SearchPacer, parse_windows
+
+        kst = timezone(timedelta(hours=9))
+
+        class Clock:
+            now = datetime(2026, 12, 1, 14, 0, tzinfo=kst)
+
+            def __call__(self):
+                return self.now
+
+            def sleep(self, seconds):
+                self.now += timedelta(seconds=seconds)
+
+        clock = Clock()
+        svc, fake = service
+        svc._last_login_time = __import__("time").time()
+        svc.pacer = SearchPacer(windows=parse_windows("00:00-00:30,06:00-06:30,07:00-07:30,18:00-18:30,19:00-19:30"),
+                                min_interval=3, humanize=True, rng=random.Random(5), now=clock, sleep=clock.sleep)
+        searched_at = []
+        seat_appears = datetime(2026, 12, 2, 6, 15, tzinfo=kst)
+
+        def search(*args, **kwargs):
+            searched_at.append(clock.now)
+            return [_train("090000")] if clock.now >= seat_appears else []
+
+        fake.trains.search.side_effect = search
+        fake.reservations.create.return_value = "RESERVED"
+
+        result = svc.search_and_reserve_loop("20261225", "서울", "부산", dep_time="090000", train_type=TrainType.KTX)
+
+        assert result == "RESERVED"
+        slot_starts = {0: 0, 6: 0, 7: 0, 18: 0, 19: 0}
+        first = searched_at[0]
+        for moment in searched_at:
+            minutes = moment.hour * 60 + moment.minute + moment.second / 60
+            in_initial = moment - first <= timedelta(minutes=2.7)           # short check right after start
+            in_slot = moment.hour in slot_starts and moment.minute < 43    # 5 min late start + 37.5 min at most
+            assert in_initial or in_slot, f"searched outside the slots at {moment}"
+            assert minutes >= 0
+        hours = sorted({m.hour for m in searched_at})
+        assert hours == [0, 6, 14, 18, 19]                                 # 14h = initial check; then every slot
+        gaps = [(b - a).total_seconds() for a, b in zip(searched_at, searched_at[1:]) if (b - a).total_seconds() < 600]
+        assert min(gaps) >= 3.0 and len({round(g, 1) for g in gaps}) > 50   # never faster than 3s, no fixed rhythm
+        assert searched_at[-1] >= seat_appears
+
+    def test_always_mode_keeps_the_fixed_interval(self, service, monkeypatch):
+        svc, fake = service
+        slept = []
+        monkeypatch.setattr("utils.pacing.time.sleep", slept.append)
+        fake.trains.search.side_effect = [NoResultsError(), NoResultsError(), [_train("090000")]]
+        fake.reservations.create.return_value = "RESERVED"
+        assert svc.search_and_reserve_loop("20991231", "서울", "부산") == "RESERVED"
+        assert slept == [svc._search_interval, svc._search_interval]

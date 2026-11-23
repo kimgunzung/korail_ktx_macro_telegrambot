@@ -18,6 +18,10 @@ os.environ.pop("TELEGRAM_BOT_TOKEN", None)
 os.environ.pop("BOTTOKEN", None)
 os.environ.pop("TELEGRAM_ALLOWED_CHAT_IDS", None)
 os.environ.pop("CARD_ENCRYPTION_KEY", None)
+# Existing loop tests expect continuous searching at a fixed interval; time slots and varied
+# pauses are covered by tests/unit/test_pacing.py with an injected clock.
+os.environ["SEARCH_WINDOWS"] = "always"
+os.environ["SEARCH_HUMANIZE"] = "false"
 
 # Redis for the integration tests: a throwaway Docker container when Docker is
 # available (testcontainers), otherwise whatever REDIS_HOST/REDIS_PORT point at

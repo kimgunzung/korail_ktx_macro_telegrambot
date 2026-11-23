@@ -1,8 +1,27 @@
 """Status text shared by the CLI (`korailbot status`) and the KakaoTalk chatbot (`상태`)."""
 from datetime import datetime
-from typing import List
+from typing import List, Optional
 
 from config.settings import settings
+from utils.pacing import describe_windows, parse_windows
+
+
+def schedule_lines(schedule: Optional[dict] = None) -> List[str]:
+    """Search time slots, plus whether the worker is searching or waiting right now."""
+    windows = parse_windows(settings.SEARCH_WINDOWS)
+    if not windows:
+        return []
+    lines = [f"🕒 시도 시간대: {describe_windows(windows)}"]
+    try:
+        start = datetime.fromisoformat(schedule["start"])
+        end = datetime.fromisoformat(schedule["end"])
+    except (TypeError, KeyError, ValueError):
+        return lines
+    if schedule.get("state") == "active":
+        lines.append(f"▶ 지금 시도 중 ({end:%H:%M}경까지)")
+    else:
+        lines.append(f"⏸ 대기 중 · 다음 시도 {start:%m/%d %H:%M}~{end:%H:%M}경")
+    return lines
 
 
 def status_lines(storage, reservation_service, kakao, user_id: int = settings.LOCAL_USER_ID,
@@ -22,6 +41,7 @@ def status_lines(storage, reservation_service, kakao, user_id: int = settings.LO
                      + ("" if for_chat else f", pid={running.process_id}") + ")")
         lines.extend(("" if for_chat else "   ") + line for line in running.search_params.summary_lines())
         lines.append(("" if for_chat else "   ") + f"👤 계정: {running.korail_id}")
+        lines.extend(("" if for_chat else "   ") + line for line in schedule_lines(storage.get_search_schedule(user_id)))
         seat = storage.get_current_seat_index(user_id)
         if seat is not None:
             lines.append(("" if for_chat else "   ") + f"💳 {seat + 1}번째 좌석 결제 대기 중 → {paid_hint}")

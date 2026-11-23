@@ -439,6 +439,10 @@ class ChatBot:
             return text_response(f"❌ 예약 검색을 시작하지 못했습니다: {e}", MAIN_REPLIES)
         self.storage.save_chat_state(key, None)
         notice = "예약 결과는 이 채팅으로 알려드립니다."
+        from services.status_view import schedule_lines
+        slots = schedule_lines()
+        if slots:
+            notice += "\n" + slots[0] + "\n그 밖의 시간에는 조회하지 않고 대기합니다. 다음 시도 시각은 '상태'로 확인하세요."
         return text_response(
             f"🎯 예약 검색을 시작했습니다! ({params.src_locate}→{params.dst_locate} {params.dep_date} {params.dep_time[:4]}~{params.max_dep_time})\n"
             f"{notice}" + ("" if card else f"\n예약 성공 후 {settings.PAYMENT_TIMEOUT_MINUTES}분 안에 결제하고 '결제완료'를 보내주세요."),

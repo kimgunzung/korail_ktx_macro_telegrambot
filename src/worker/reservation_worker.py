@@ -76,6 +76,7 @@ class ReservationWorker:
         self.storage = storage or RedisStorage()
         self.notifier = notifier or Notifier(self.storage, user_id=self.user_id)
         self.korail = korail or KorailService()
+        self.korail.set_pacing_listener(self._on_pacing_state)
 
         logger.info("========================================")
         logger.info("Reservation worker started")
@@ -116,6 +117,12 @@ class ReservationWorker:
         except (ValueError, KeyError, TypeError) as e:
             logger.error(f"Ignoring malformed KORAIL_BOT_CARD: {type(e).__name__}")
             return None
+
+    # ------------------------------------------------------------- pacing
+
+    def _on_pacing_state(self, state: dict) -> None:
+        """Record whether the worker is searching or waiting for the next slot (shown by `status`)."""
+        self.storage.save_search_schedule(self.user_id, state)
 
     # ---------------------------------------------------------- reporting
 
@@ -236,6 +243,7 @@ class ReservationWorker:
             ))
         finally:
             self.storage.delete_running_reservation(self.user_id)
+            self.storage.save_search_schedule(self.user_id, None)
             logger.info(f"Reservation worker ended for {self.username}")
 
     def _search_loop(self):
@@ -365,7 +373,7 @@ class ReservationWorker:
                             f"미결제 좌석은 자동 취소될 수 있으니 빠르게 결제해주세요!"
                         )
                     self.storage.set_current_seat_index(self.user_id, None)
-                time.sleep(3)
+                self.korail.pause()
 
         self.storage.set_current_seat_index(self.user_id, None)
         all_reservations = self.storage.get_partial_reservations(self.user_id)
@@ -424,6 +432,7 @@ class ReservationWorker:
             if is_summary:
                 logger.debug(f"🔄 Search attempt #{attempts} for seat {seat_index + 1}")
 
+            self.korail.wait_for_turn(self.dep_date, self.dep_time)
             try:
                 trains = self.korail.search_trains(
                     dep_date=self.dep_date, src_locate=self.src_locate, dst_locate=self.dst_locate,
@@ -434,11 +443,11 @@ class ReservationWorker:
                 raise
             except Exception as e:
                 logger.error(f"❌ Search failed (attempt #{attempts}): {e}", exc_info=True)
-                time.sleep(self.korail._search_interval)
+                self.korail.pause()
                 continue
 
             if not trains:
-                time.sleep(self.korail._search_interval)
+                self.korail.pause()
                 continue
 
             duplicate_found = False
@@ -459,7 +468,7 @@ class ReservationWorker:
                     return reservation
                 logger.info(f"  ❌ Train {idx} failed (sold out or unavailable)")
 
-            time.sleep(10 if duplicate_found else self.korail._search_interval)
+            self.korail.pause(at_least=10 if duplicate_found else 0)
 
 
 if __name__ == "__main__":

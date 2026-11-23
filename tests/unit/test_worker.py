@@ -62,6 +62,9 @@ class FakeStorage:
     def wait_for_payment(self, user_id, seat_index, timeout=600):
         return seat_index in self.ready
 
+    def save_search_schedule(self, user_id, state):
+        self.schedule = state
+
 
 ARGV = ["worker", "010-1234-5678", "20991231", "서울", "부산", "090000", "TrainType.KTX",
         "ReserveOption.GENERAL_FIRST", "1", "1800", "1", "consecutive"]
@@ -94,6 +97,17 @@ def make_worker():
             worker = ReservationWorker(argv or ARGV, storage=storage, notifier=notifier, korail=korail)
         return worker
     return _make
+
+
+class TestPacing:
+    def test_worker_records_schedule_and_clears_it_at_the_end(self, make_worker):
+        worker = make_worker()
+        listener = worker.korail.set_pacing_listener.call_args.args[0]
+        listener({"state": "waiting", "start": "s", "end": "e"})
+        assert worker.storage.schedule == {"state": "waiting", "start": "s", "end": "e"}
+        worker.korail.search_and_reserve_loop.return_value = None
+        worker.run()
+        assert worker.storage.schedule is None
 
 
 class TestInit:

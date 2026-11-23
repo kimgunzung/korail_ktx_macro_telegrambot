@@ -126,6 +126,24 @@ class RedisStorage(StorageInterface):
     def save_last_result(self, user_id: int, result: ReservationResult) -> None:
         self.redis.set(f"last_result:{user_id}", json.dumps(result.to_dict(), ensure_ascii=False))
 
+    # ==================== Search schedule (waiting / active slot) ====================
+
+    def get_search_schedule(self, user_id: int) -> Optional[dict]:
+        data = self.redis.get(f"search_schedule:{user_id}")
+        if not data:
+            return None
+        try:
+            return json.loads(data)
+        except json.JSONDecodeError:
+            return None
+
+    def save_search_schedule(self, user_id: int, state: Optional[dict]) -> None:
+        key = f"search_schedule:{user_id}"
+        if state is None:
+            self.redis.delete(key)
+        else:
+            self.redis.set(key, json.dumps(state, ensure_ascii=False), ex=3 * 24 * 3600)
+
     # ==================== Payment Status Management ====================
 
     def get_payment_status(self, user_id: int) -> Optional[PaymentStatus]:

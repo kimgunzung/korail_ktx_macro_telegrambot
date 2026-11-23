@@ -79,6 +79,7 @@ chmod 600 .env
 |----|----|
 | `REDIS_HOST` / `REDIS_PORT` | `localhost` / `6379` (로컬 Redis) |
 | `SEARCH_INTERVAL` | `3` 이상. 줄이면 차단 위험 |
+| `SEARCH_WINDOWS` | 조회 시간대. 기본 `00:00-00:30,06:00-06:30,07:00-07:30,18:00-18:30,19:00-19:30` (시작·길이는 매번 달라짐). `.env` 에 없으면 기본값 적용 |
 | `TELEGRAM_BOT_TOKEN` | `123456789:AAE...` 형태 전체 |
 | `CARD_ENCRYPTION_KEY` | 예전 서버 값 그대로, 또는 새로 생성 |
 
@@ -169,7 +170,9 @@ korailbot logs -f        # 워커 조회 로그 실시간 확인
 | 등록 채팅 전체 해제 | `korailbot unpair` |
 | 카드 삭제 / 계정 삭제 | `korailbot card delete` / `korailbot logout` |
 
-`SEARCH_INTERVAL` 같은 설정을 바꾸면 봇을 재시작하고, 이미 돌고 있는 검색은 `취소` 후 다시 `예약`해야 새 값이 적용됩니다.
+예약을 걸어 두면 워커는 `SEARCH_WINDOWS` 시간대에만 조회하고 나머지 시간에는 대기합니다. `korailbot status` 의 `⏸ 대기 중 · 다음 시도 …` 는 정상 동작입니다.
+
+`SEARCH_INTERVAL`, `SEARCH_WINDOWS` 같은 설정을 바꾸면 봇을 재시작하고, 이미 돌고 있는 검색은 `취소` 후 다시 `예약`해야 새 값이 적용됩니다.
 
 ## 문제 해결
 

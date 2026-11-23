@@ -208,6 +208,9 @@ def cmd_start(args) -> int:
     paired = storage.get_paired_users() if settings.telegram_enabled() else []
     say(f"📣 알림: {'텔레그램 ' + str(len(paired)) + '개 채팅' if paired else '텔레그램 미등록 (korailbot pair)'}"
         + (", 카카오톡 연동됨" if kakao.enabled and kakao.is_linked(USER_ID) else ""))
+    from services.status_view import schedule_lines
+    for line in schedule_lines():
+        say(line)
     say("━━━━━━━━━━━━━━━━━━━━")
     if not args.yes and not confirm("예약 검색을 시작할까요?"):
         say("취소했습니다.")
@@ -220,6 +223,8 @@ def cmd_start(args) -> int:
     say(f"🎯 예약 검색을 시작했습니다. (pid={running.process_id})")
     say(f"   로그: {reservation_service.worker_log_path(running.started_at)}")
     say("   진행 상황: korailbot status  |  로그 보기: korailbot logs -f  |  중단: korailbot cancel")
+    if schedule_lines():
+        say("   시도 시간대 밖에서는 조회하지 않고 대기합니다. 다음 시도 시각은 `korailbot status` 에 표시됩니다.")
     if not card:
         say(f"   예약 성공 후 {settings.PAYMENT_TIMEOUT_MINUTES}분 안에 결제하고 `korailbot paid` 를 실행하세요.")
     return 0

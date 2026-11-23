@@ -30,7 +30,7 @@ CLI와 워커는 Redis로 상태를 공유합니다. 계정과 카드 정보는 
 
 ## 참고
 
-- 코레일 API 클라이언트로 [devgyurak/pykorail](https://github.com/devgyurak/pykorail) **0.5.1** 을 사용합니다 (코레일+ 7.0.10 / DynaPath v2 규격, Python 3.11+). 코레일은 2026-10-21 앱 보안 모듈을 v2로 바꿔 그 이전 버전(0.2.x~0.4.x)은 로그인·조회가 `-8204 앱 업데이트 필요` 로 거부됩니다. 이 오류가 보이면 `git pull` 후 `pip install -r requirements.txt` 로 갱신하세요.
+- 코레일 API 클라이언트로 pykorail **0.5.1** 을 사용합니다 (코레일+ 7.0.10 / DynaPath v2 규격, Python 3.11+). pykorail 은 2026년 11월 초 PyPI 에서 삭제되고 원 저장소도 닫혀서, 이 저장소의 `vendor/` 에 보관한 배포본으로 설치합니다(`requirements.txt` 가 자동 처리, [vendor/README.md](vendor/README.md)). 원 배포처가 없어 이후 수정본을 받을 수 없으므로, 코레일이 앱 규격을 다시 바꾸면(`-8204 앱 업데이트 필요`) 이 봇은 대체 수단이 생길 때까지 동작하지 않습니다.
 - 2026-09 KTX·SRT 통합(코레일+) 이후에도 pykorail 은 코레일 열차만 조회합니다(앱의 "SRT 함께 보기" 옵션은 꺼진 채 요청). SRT 열차 조회·예매는 아직 지원하지 않습니다.
 - 과거에 사용했던 [carpedm20/korail2](https://github.com/carpedm20/korail2) 계열은 2026-09 코레일+ 앱 업데이트 이후 `-2000 이용 제한` 응답을 받아 동작하지 않습니다.
 - 코레일은 AWS 등 데이터센터·VPN IP를 차단(`-8202`)하고, 매크로로 판정한 공인 IP도 차단합니다. **가정용 회선에서 실행하세요.** 한 번 차단된 IP는 코드를 고쳐도 풀리지 않으며 공인 IP가 바뀌어야 합니다.
@@ -187,7 +187,7 @@ tests/                      # unit (Redis 불필요) / integration (Redis)
 
 ## 기술 스택
 
-- **Korail API**: [devgyurak/pykorail](https://github.com/devgyurak/pykorail)
+- **Korail API**: pykorail 0.5.1 (`vendor/` 에 보관)
 - **State**: Redis
 - **Chat/Notifications**: Telegram Bot API (long polling), Kakao REST API (optional)
 - **Crypto**: pycryptodome (AES-256-GCM)

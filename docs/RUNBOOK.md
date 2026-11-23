@@ -184,6 +184,7 @@ korailbot logs -f        # 워커 조회 로그 실시간 확인
 | 텔레그램 답이 없음 | `systemctl --user status korailbot-telegram`, `pgrep -af "cli.py telegram"`으로 인스턴스가 **하나만** 도는지 확인 |
 | `토큰 확인 실패` | `.env` 토큰 오타, 방화벽이 `api.telegram.org`를 막는지 확인 |
 | "등록되지 않은 사용자" | `korailbot pair` 후 10분 안에 `등록 <코드>` 전송 |
-| `-8204` / `최신 버전으로 업데이트` | 코레일 앱 규격 변경으로 구버전 pykorail 거부. `git pull` → `.venv/bin/pip install -r requirements.txt` → 봇 재시작 |
+| `-8204` / `최신 버전으로 업데이트` | 코레일 앱 규격 변경으로 pykorail 거부. 먼저 `git pull` → `.venv/bin/pip install -r requirements.txt` → 봇 재시작. 그래도 같으면 보관본(0.5.1)이 막힌 것이고, pykorail 원 배포처가 사라져 갱신본이 없으므로 대체 수단이 필요 |
+| `No matching distribution found for pykorail` | 저장소 루트의 `vendor/` 폴더가 없거나 오래된 체크아웃. `git pull` 후 `requirements.txt` 첫 줄에 `--find-links vendor` 가 있는지 확인 |
 | `코레일 이용 제한` / `-8202` / `-2000` | IP 차단. 다른 회선에서 이 문서대로 재구축. `SEARCH_INTERVAL`을 3 미만으로 내리지 말 것 |
 | 계정/카드 복호화 실패 | `CARD_ENCRYPTION_KEY`가 예전과 다름. 예전 값을 넣거나 `login`, `card set`으로 재등록 |
